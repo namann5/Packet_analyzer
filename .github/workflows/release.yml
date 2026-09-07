@@ -30,25 +30,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Meson + Ninja (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-pip ninja-build
-          pip3 install meson
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
-      - name: Install Meson + Ninja (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          pip install meson
-          choco install ninja -y
-
-      - name: Install Meson + Ninja (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install ninja
-          pip3 install meson
+      - name: Install Meson + Ninja
+        run: pip install meson ninja
 
       - name: Configure
         run: meson setup build --buildtype=release

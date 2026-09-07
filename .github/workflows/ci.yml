@@ -19,42 +19,34 @@ jobs:
         include:
           - name: Linux
             os: ubuntu-latest
-            cc: gcc
-            cxx: g++
           - name: macOS
             os: macos-latest
-            cc: clang
-            cxx: clang++
           - name: Windows
             os: windows-latest
-            cc: cl
-            cxx: cl
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Meson + Ninja (Linux)
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Meson + Ninja
+        run: pip install meson ninja
+
+      - name: Install libpcap (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-pip ninja-build
-          pip3 install meson
-          sudo apt-get install -y libglib2.0-dev
-        # libpcap optional - we stay dependency-free in CI by default
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
 
-      - name: Install Meson + Ninja (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install ninja
-          pip3 install meson
-
-      - name: Install Meson + Ninja (Windows)
+      - name: Install Npcap SDK (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          pip install meson
-          choco install ninja -y
+          # Building without live capture in CI by default (live_capture=false).
+          # Npcap SDK is only needed when -Dlive_capture=true is passed.
+          Write-Host "Building without live capture (Dependency-free CI)"
 
       - name: Configure (Meson)
         run: meson setup ${{ env.BUILD_DIR }} -Dtests=true
@@ -64,6 +56,13 @@ jobs:
 
       - name: Run tests
         run: meson test -C ${{ env.BUILD_DIR }} --print-errorlogs
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ matrix.name }}
+          path: ${{ env.BUILD_DIR }}/meson-logs/
 
   dashboard:
     name: Dashboard (Python)
