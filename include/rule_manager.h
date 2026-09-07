@@ -91,7 +91,7 @@ public:
     // Check if a packet/connection should be blocked based on all rules
     // Returns the reason if blocked, nullopt if allowed
     struct BlockReason {
-        enum Type { IP, APP, DOMAIN, PORT } type;
+        enum Type { BLOCK_IP, BLOCK_APP, BLOCK_DOMAIN, BLOCK_PORT } type;
         std::string detail;
     };
     
