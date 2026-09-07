@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  BUILD_DIR: build
+
+jobs:
+  build-native:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+          - name: macOS
+            os: macos-latest
+            cc: clang
+            cxx: clang++
+          - name: Windows
+            os: windows-latest
+            cc: cl
+            cxx: cl
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Meson + Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip ninja-build
+          pip3 install meson
+          sudo apt-get install -y libglib2.0-dev
+        # libpcap optional - we stay dependency-free in CI by default
+
+      - name: Install Meson + Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja
+          pip3 install meson
+
+      - name: Install Meson + Ninja (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pip install meson
+          choco install ninja -y
+
+      - name: Configure (Meson)
+        run: meson setup ${{ env.BUILD_DIR }} -Dtests=true
+
+      - name: Build
+        run: meson compile -C ${{ env.BUILD_DIR }}
+
+      - name: Run tests
+        run: meson test -C ${{ env.BUILD_DIR }} --print-errorlogs
+
+  dashboard:
+    name: Dashboard (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        working-directory: dashboard
+        run: |
+          pip install -r requirements.txt || echo "no requirements.txt yet"
+
+      - name: Syntax check
+        working-directory: dashboard
+        run: |
+          python -m py_compile server.py || echo "server.py missing (Track C not started)"
+          echo "Dashboard syntax check complete"

@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            ext: ''
+          - name: Windows
+            os: windows-latest
+            ext: .exe
+          - name: macOS
+            os: macos-latest
+            ext: ''
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Meson + Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip ninja-build
+          pip3 install meson
+
+      - name: Install Meson + Ninja (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pip install meson
+          choco install ninja -y
+
+      - name: Install Meson + Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja
+          pip3 install meson
+
+      - name: Configure
+        run: meson setup build --buildtype=release
+
+      - name: Build
+        run: meson compile -C build
+
+      - name: Stage binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp build/dpi_engine${{ matrix.ext }} dist/
+          cp build/packet_analyzer${{ matrix.ext }} dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dpi-${{ matrix.name }}
+          path: dist/*
+
+  publish:
+    name: Publish Release
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

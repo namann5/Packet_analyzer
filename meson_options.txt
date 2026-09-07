@@ -1,0 +1,13 @@
+option(
+  'live_capture',
+  type: 'boolean',
+  value: false,
+  description: 'Enable libpcap-based live capture (Track A)',
+)
+
+option(
+  'tests',
+  type: 'boolean',
+  value: true,
+  description: 'Run the engine smoke test after build',
+)

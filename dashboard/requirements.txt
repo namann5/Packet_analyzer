@@ -1,0 +1,6 @@
+# Track C - Web dashboard dependencies.
+# Populated as the dashboard (FastAPI + uvicorn + websockets + reportlab) is built.
+fastapi
+uvicorn[standard]
+websockets
+reportlab

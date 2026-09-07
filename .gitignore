@@ -1,0 +1,27 @@
+# Build artifacts
+build/
+builddir/
+dist/
+*.o
+*.obj
+*.exe
+dpi_engine
+packet_analyzer
+
+# Test output
+output*.pcap
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Meson
+meson-private/
+compile_commands.json
+
+# OS files
+.DS_Store
+Thumbs.db
