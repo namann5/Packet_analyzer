@@ -1,7 +1,16 @@
 # Packet_analyzer — Real-Time DPI System Project Plan
 
 **Status:** Draft v1.0
-**Lead:** (leader)
+**Lead:** Naman Singh (namann5)
+
+## Contributors
+
+| Role | Contributor |
+|---|---|
+| **Lead** | Naman Singh ([@namann5](https://github.com/namann5)) |
+| Track A — Capture + Rules | _TBD_ |
+| Track B — Security | _TBD_ |
+| Track C — Dashboard | _TBD_ |
 **Target platform:** Cross-platform (Windows native + Linux / WSL)
 **Build system:** Meson
 **Baseline:** Existing C++17 DPI engine (~4,600 LOC) — PCAP replay, SNI/Host extraction, thread-safe rule engine, multi-threaded fast-path. No external deps.
