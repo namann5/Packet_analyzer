@@ -444,7 +444,18 @@ bool RulesStore::applyTo(RuleManager& rm, std::string& error) const {
             }
             rm.blockPort(static_cast<uint16_t>(port));
         } else if (r.type == "app") {
-            rm.blockApp(r.value);
+            bool found = false;
+            for (int i = 1; i < static_cast<int>(AppType::APP_COUNT); i++) {
+                if (appTypeToString(static_cast<AppType>(i)) == r.value) {
+                    rm.blockApp(static_cast<AppType>(i));
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                error = "Unknown app value in rule '" + r.value + "'";
+                return false;
+            }
         }
     }
     return true;
