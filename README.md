@@ -33,11 +33,12 @@ This document explains **everything** about this project - from basic networking
 
 ### What Our DPI Engine Does:
 ```
-User Traffic (PCAP) → [DPI Engine] → Filtered Traffic (PCAP)
-                           ↓
-                    - Identifies apps (YouTube, Facebook, etc.)
-                    - Blocks based on rules
-                    - Generates reports
+User Traffic (PCAP / live NIC) → [DPI Engine] → Filtered Traffic
+                                         ↓
+                          - Identifies apps (YouTube, Facebook, etc.)
+                          - Blocks based on rules
+                          - Persistent JSON rules + CLI (Track A)
+                          - Generates reports
 ```
 
 ---
@@ -128,18 +129,23 @@ TLS Client Hello:
 │ Wireshark   │     │ DPI Engine  │     │ Output      │
 │ Capture     │ ──► │             │ ──► │ PCAP        │
 │ (input.pcap)│     │ - Parse     │     │ (filtered)  │
-└─────────────┘     │ - Classify  │     └─────────────┘
-                    │ - Block     │
-                    │ - Report    │
-                    └─────────────┘
+│  OR live    │     │ - Classify  │     └─────────────┘
+│  interface  │     │ - Block     │
+│  (-i eth0)  │     │ - Report    │
+└─────────────┘     └─────────────┘
 ```
 
-### Two Versions
+### Build/Entry Points
 
-| Version | File | Use Case |
+The **modular engine** (`main_dpi.cpp` + `include/`+`src/`) is the one built by Meson.
+The legacy standalone versions exist for reference only and are **not** built:
+
+| Entry point | File | Use Case |
 |---------|------|----------|
-| Simple (Single-threaded) | `src/main_working.cpp` | Learning, small captures |
-| Multi-threaded | `src/dpi_mt.cpp` | Production, large captures |
+| Engine (multi-threaded, Track A) | `src/main_dpi.cpp` | Production — file replay + live capture, JSON rules |
+| Rules CLI | `src/dpi_cli.cpp` | Persistent rule CRUD (add/del/list/enable/import/export) |
+| Simple viewer (legacy) | `src/main_working.cpp` | Learning, small captures |
+| Self-contained MT (legacy) | `src/dpi_mt.cpp` | Historical reference, not in the build |
 
 ---
 
@@ -152,22 +158,33 @@ packet_analyzer/
 │   ├── packet_parser.h        # Network protocol parsing
 │   ├── sni_extractor.h        # TLS/HTTP inspection
 │   ├── types.h                # Data structures (FiveTuple, AppType, etc.)
-│   ├── rule_manager.h         # Blocking rules (multi-threaded version)
-│   ├── connection_tracker.h   # Flow tracking (multi-threaded version)
-│   ├── load_balancer.h        # LB thread (multi-threaded version)
-│   ├── fast_path.h            # FP thread (multi-threaded version)
+│   ├── rule_manager.h         # Blocking rules (multi-threaded)
+│   ├── rules_store.h          # Persistent JSON rules store (Track A)
+│   ├── connection_tracker.h   # Flow tracking (multi-threaded)
+│   ├── load_balancer.h        # LB thread (multi-threaded)
+│   ├── fast_path.h            # FP thread (multi-threaded)
 │   ├── thread_safe_queue.h    # Thread-safe queue
+│   ├── capture_source.h       # FileCapture + LiveCapture (Track A)
 │   └── dpi_engine.h           # Main orchestrator
 │
 ├── src/                        # Implementation files
 │   ├── pcap_reader.cpp        # PCAP file handling
+│   ├── capture_source.cpp     # File/live capture abstraction (Track A)
 │   ├── packet_parser.cpp      # Protocol parsing
 │   ├── sni_extractor.cpp      # SNI/Host extraction
 │   ├── types.cpp              # Helper functions
-│   ├── main_working.cpp       # ★ SIMPLE VERSION ★
-│   ├── dpi_mt.cpp             # ★ MULTI-THREADED VERSION ★
-│   └── [other files]          # Supporting code
+│   ├── rule_manager.cpp       # Rule enforcement
+│   ├── rules_store.cpp        # JSON persistence (Track A)
+│   ├── dpi_cli.cpp            # ★ dpi_cli — rules CRUD CLI (Track A) ★
+│   ├── dpi_engine.cpp         # DPIEngine orchestrator
+│   ├── main_dpi.cpp           # ★ BUILDABLE ENGINE MAIN ★
+│   ├── main_working.cpp       # Legacy single-threaded version
+│   ├── dpi_mt.cpp             # Legacy self-contained multi-threaded version
+│   └── main.cpp               # Legacy packet viewer
 │
+├── meson.build                # Build system (Meson)
+├── meson_options.txt          # Meson toggles (-Dlive_capture, -Dtests)
+├── .github/workflows/         # CI (3-OS matrix + live-capture job)
 ├── generate_test_pcap.py      # Creates test data
 ├── test_dpi.pcap              # Sample capture with various traffic
 └── README.md                  # This file!
@@ -866,59 +883,90 @@ Connection to YouTube:
 
 ### Prerequisites
 
-- **macOS/Linux** with C++17 compiler
-- **g++** or **clang++**
-- No external libraries needed!
+- **Meson** + **Ninja** (package manager or `pip install meson ninja`)
+- **C++17 compiler** — GCC, Clang, or MSVC
+- **Linux live capture (optional):** `sudo apt install libpcap-dev` (or distro equivalent); then pass `-Dlive_capture=true` to meson
 
-### Build Commands
+### Build
 
-**Simple Version:**
 ```bash
-g++ -std=c++17 -O2 -I include -o dpi_simple \
-    src/main_working.cpp \
-    src/pcap_reader.cpp \
-    src/packet_parser.cpp \
-    src/sni_extractor.cpp \
-    src/types.cpp
+meson setup build                # configure (release by default)
+meson compile -C build           # build dpi_engine + dpi_cli + packet_analyzer
 ```
 
-**Multi-threaded Version:**
+Enable live capture (requires libpcap):
 ```bash
-g++ -std=c++17 -pthread -O2 -I include -o dpi_engine \
-    src/dpi_mt.cpp \
-    src/pcap_reader.cpp \
-    src/packet_parser.cpp \
-    src/sni_extractor.cpp \
-    src/types.cpp
+meson setup build -Dlive_capture=true
+meson compile -C build
 ```
 
-### Running
-
-**Basic usage:**
+Run tests (included in CI):
 ```bash
-./dpi_engine test_dpi.pcap output.pcap
+meson test -C build
+# → engine_smoke        (replay test_dpi.pcap with --block-app YouTube)
+# → rules_cli_persistence (dpi_cli add-rule, verify file written)
 ```
 
-**With blocking:**
+### Running the Engine
+
+**File replay (original mode):**
 ```bash
-./dpi_engine test_dpi.pcap output.pcap \
-    --block-app YouTube \
-    --block-app TikTok \
-    --block-ip 192.168.1.50 \
-    --block-domain facebook
+build/dpi_engine test_dpi.pcap output.pcap --block-app YouTube
 ```
 
-**Configure threads (multi-threaded only):**
+**Live capture from an interface (Linux, requires libpcap):**
 ```bash
-./dpi_engine input.pcap output.pcap --lbs 4 --fps 4
-# Creates 4 LB threads × 4 FP threads = 16 processing threads
+build/dpi_engine -i eth0 -o live.pcap --block-app YouTube
+```
+
+**List available interfaces:**
+```bash
+build/dpi_engine -l
+```
+
+**Load persistent rules at startup:**
+```bash
+build/dpi_engine -i eth0 -o live.pcap --rules rules.json
+```
+
+**Thread tuning:**
+```bash
+build/dpi_engine input.pcap output.pcap --lbs 2 --fps 2
+# 2 LBs × 2 FPs = 4 FP processing threads
+```
+
+### Managing Rules (dpi_cli)
+
+The `dpi_cli` tool persists rules to a JSON file so they survive across restarts:
+
+```bash
+# Add a blocking rule
+build/dpi_cli add-rule --type app --value YouTube
+build/dpi_cli add-rule --type domain --value '*.tiktok.com'
+build/dpi_cli add-rule --type ip --value 10.0.0.50 --note "known scanner"
+build/dpi_cli add-rule --type port --value 443 --disabled
+
+# List all rules (or filter by type)
+build/dpi_cli list-rules
+build/dpi_cli list-rules --type domain
+
+# Enable / disable / delete
+build/dpi_cli disable 3
+build/dpi_cli enable 3
+build/dpi_cli del-rule 3
+
+# Import / export rule sets
+build/dpi_cli import old_rules.json
+build/dpi_cli export new_rules.json
+
+# Use a custom store file
+build/dpi_cli --store my_rules.json add-rule --type port --value 22
 ```
 
 ### Creating Test Data
 
 ```bash
-python3 generate_test_pcap.py
-# Creates test_dpi.pcap with sample traffic
+python3 generate_test_pcap.py   # creates test_dpi.pcap with sample traffic
 ```
 
 ---
@@ -1041,6 +1089,9 @@ This DPI engine demonstrates:
 3. **Flow Tracking** - Managing stateful connections
 4. **Multi-threaded Architecture** - Scaling with thread pools
 5. **Producer-Consumer Pattern** - Thread-safe queues
+6. **Persistent Rules** (Track A) - JSON-backed rule store + `dpi_cli` CRUD, survive restarts
+7. **Live Capture** (Track A) - libpcap interface capture with same processing pipeline
+8. **Cross-platform CI** - 3-OS matrix (Linux, macOS, Windows) + live-capture job
 
 The key insight is that even HTTPS traffic leaks the destination domain in the TLS handshake, allowing network operators to identify and control application usage.
 

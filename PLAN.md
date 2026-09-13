@@ -1,6 +1,6 @@
 # Packet_analyzer — Real-Time DPI System Project Plan
 
-**Status:** Draft v1.0
+**Status:** v1.1 — Track A (M0 + M1) delivered, CI green on all 3 OS + live capture
 **Lead:** Naman Singh (namann5)
 
 ## Contributors
@@ -8,7 +8,7 @@
 | Role | Contributor |
 |---|---|
 | **Lead** | Naman Singh ([@namann5](https://github.com/namann5)) |
-| Track A — Capture + Rules | _TBD_ |
+| Track A — Capture + Rules | Naman Singh ([@namann5](https://github.com/namann5)) — delivered, see §5 |
 | Track B — Security | _TBD_ |
 | Track C — Dashboard | _TBD_ |
 **Target platform:** Cross-platform (Windows native + Linux / WSL)
@@ -34,13 +34,13 @@ Reads as: **"real-time DPI system with security detection and a live monitoring 
 
 ## 2. Role Assignment (decide before starting)
 
-Currently **unassigned**. The plan is split so each block is independently demoable and can be handed to one person.
+The plan is split so each block is independently demoable and can be handed to one person. **Track A is now delivered** (by the lead).
 
 | Track | Owner (TBD) | Scope | Independent demo |
 |---|---|---|---|
-| **A — Capture + Rules** | | libpcap live capture, PCAP↔live abstraction, JSON/SQLite rule persistence, rules CLI, Meson build | `dpi_engine -i eth0` classes real packets; CRUD rules; survive restart |
-| **B — Security** | | Port scan, SYN flood, DNS tunneling detectors; URLhaus blocklist; VPN fingerprinting | Feed malicious pcap → detected & blocked; VPN traffic flagged `VPN_DETECTED` |
-| **C — Dashboard** | | FastAPI + WebSocket + Chart.js, REST API, PDF/HTML reports, IPC bridge to C++ | Live-updating charts of blocked traffic, app breakdown, throughput; export report |
+| **A — Capture + Rules** | ✅ delivered (§5) | libpcap live capture, PCAP↔live abstraction, persistent JSON rules, rules CLI, Meson build | `dpi_engine -i eth0` classes real packets; CRUD rules; survive restart |
+| **B — Security** | _TBD_ | Port scan, SYN flood, DNS tunneling detectors; URLhaus blocklist; VPN fingerprinting | Feed malicious pcap → detected & blocked; VPN traffic flagged `VPN_DETECTED` |
+| **C — Dashboard** | _TBD_ | FastAPI + WebSocket + Chart.js, REST API, PDF/HTML reports, IPC bridge to C++ | Live-updating charts of blocked traffic, app breakdown, throughput; export report |
 
 > Cross-cutting integration contract (below) must be agreed FIRST so tracks can proceed in parallel.
 
@@ -48,14 +48,14 @@ Currently **unassigned**. The plan is split so each block is independently demoa
 
 ## 3. Current-State Assessment (verified)
 
-- **Language:** C++17 (core), Python (only `generate_test_pcap.py`)
-- **No external dependencies today**; byte-order handled internally (`platform.h`)
-- **Reading:** custom `pcap_reader.cpp` — file-only (native + byte-swapped)
-- **Rules:** `RuleManager` — IP / App / Domain / Port, INI-style text save/load, `shared_mutex` thread-safe
+- **Language:** C++17 (core), Python (only `generate_test_pcap.py`, `dashboard/` future)
+- **Build:** Meson (`meson.build` + `meson_options.txt`) is the build system; `CMakeLists.txt` is STALE and removed from consideration
+- **Reading:** `capture_source.h` abstraction — `FileCapture` (existing `pcap_reader`) + **`LiveCapture` (libpcap, Linux; Windows builds without it)**
+- **Rules:** `RuleManager` — IP / App / Domain / Port, thread-safe. **Now `std::mutex`-based** (winpthreads' `shared_mutex` rwlock caused an intermittent `__builtin_abort` in release builds under concurrent readers). New **persistent JSON `RulesStore` + `dpi_cli`** CRUD lives in `rules_store.*` / `dpi_cli.cpp`
 - **Concurrency:** LB → FP fast-path threads, connection tracking, thread-safe queues
-- **CMakeLists.txt is STALE** — builds only `main.cpp` viewer, not the real engine. **Will be replaced by Meson.**
-- Two parallel engine impls exist (`dpi_mt.cpp` self-contained vs. modular `include/`+`src/`). **Decide on the modular one** (cleaner for extension at scale).
-- **No test framework** — manual testing today.
+- **Engine impl:** modular `include/` + `src/` (`main_dpi.cpp`) is the build target; legacy `src/main_working.cpp`, `src/main_simple.cpp`, `src/main.cpp`, `src/dpi_mt.cpp` remain as historical/desktop-only variants (not built by Meson)
+- **Tests:** Meson `test()` harness — `engine_smoke` (replay 77-pkt `test_dpi.pcap` with `--block-app YouTube`) + `rules_cli_persistence`. CI runs these on **Linux, macOS, Windows (MSVC+GCC)**, plus a **Linux live-capture** job and a Python syntax-check job — all green
+- **Known bugs fixed:** LoadBalancer init-order OOB (`per_fp_counts_` sized from moved-from vector); meson `disabler()` silently dropping target+tests; engine_smoke relied on CWD so it failed under `meson test`
 
 ---
 
@@ -118,29 +118,33 @@ Every packet → classification → emits zero or more events; aggregated counte
 
 ## 5. Track A — Live Capture + Persistent Rules Engine
 
-### 5.1 Live capture (libpcap)
-- `include/live_capture.h` + `src/live_capture.cpp`
-- Abstraction: `CaptureSource` interface with two impls — `FileCapture` (existing reader) and `LiveCapture` (libpcap)
-- `LiveCapture::open(interface_or_options, snaplen=65535, promisc, timeout_ms)`
-- Callback style: reuse existing per-packet pipeline (hand the `u_char*` + hdr to the SAME extract path)
-- **Platform:** Linux → `pcap_open_live`+`pcap_next_ex`; Windows → link `pcap` (Npcap install). Meson toggles via `pcap_dep`.
+**Status: ✅ DELIVERED (M1 gate met)** — live capture classifies real packets; rules CRUD persists across restarts; CI green.
 
-### 5.2 Persistent rules (JSON + SQLite)
+### 5.1 Live capture (libpcap) ✅
+- `include/capture_source.h` + `src/capture_source.cpp`
+- Abstraction: `CaptureSource` interface with two impls — `FileCapture` (existing reader) and `LiveCapture` (libpcap)
+- `LiveCapture::open(interface, snaplen=65535, promisc, timeout_ms)`; `-l` lists interfaces
+- Callback style: the SAME per-packet extract path handles file and live packets (`CapturePacket` mirrors `RawPacket`)
+- **Platform:** Linux → `pcap_open_live`+`pcap_next_ex`; Windows → optional Npcap link. Meson toggles via `live_capture` option + `HAVE_LIBPCAP`
+- CLI: `dpi_engine -i eth0 [-o live.pcap] [--rules rules.json]`; Ctrl+C graceful stop
+
+### 5.2 Persistent rules (JSON) ✅ — SQLite deferred to backlog
 - Upgrade `RuleManager` backend:
-  - Primary: **SQLite** table `rules(id, type, value, enabled, created_at, note)`
-  - Snapshot/portability: **JSON export/import** (`rules.json`)
-- **CLI** `dpi_cli` (new `src/dpi_cli.cpp`):
-  - `dpi_cli add-rule --type ip|app|domain|port --value 1.2.3.4 [--note "..."]`
+  - Implemented: **JSON store** (`rules_store.*`) — portable, zero-install, survives restart
+  - Backlog: **SQLite** table `rules(id, type, value, enabled, created_at, note)` (was §5.2 primary; JSON chosen first for zero-dependency portability)
+- **CLI** `dpi_cli` (`src/dpi_cli.cpp`), commands all implemented:
+  - `dpi_cli add-rule --type ip|app|domain|port --value 1.2.3.4 [--note "..." ] [--disabled]`
   - `dpi_cli del-rule <id>`
   - `dpi_cli list-rules [--type domain]`
-  - `dpi_cli import rules.json` / `export rules.json`
-  - `dpi_cli enable|disable <id>`
-- Rules load at engine startup; live `reload-rule` available.
+  - `dpi_cli import rules.json` / `export out.json`
+  - `dpi_cli enable <id>` / `disable <id>` / `clear`
+  - `--store <file>` for all (default `rules.json`)
+- Engine loads `--rules rules.json` at startup; `RulesStore::applyTo(RuleManager&)` maps AppType names → enum
 
-### 5.3 Deliverables / demo
+### 5.3 Deliverables / demo — ✅ VERIFIED
 - `meson setup build && meson compile -C build`
-- `dpi_engine -i <interface> --rules rules.db` → live classification
-- CLI rule CRUD that survives a restart (persistence proven)
+- `dpi_engine -i <interface> --rules rules.json` → live classification
+- CLI rule CRUD that survives a restart (persistence proven by `rules_cli_persistence` test)
 
 ---
 
@@ -216,8 +220,8 @@ Match → label connection `VPN_DETECTED`; optionally blockable; surfaced in das
 
 | # | Milestone | Tracks | Gate |
 |---|---|---|---|
-| M0 | Integration contract + Meson skeleton + build green | A, B, C | `meson compile` succeeds; baseline engine still runs |
-| M1 | Live capture + JSON/SQLite rules + CLI | A | Live capture classifies; rules survive restart |
+| M0 | Integration contract + Meson skeleton + build green | A, B, C | ✅ Done — `meson compile` succeeds; baseline engine still runs; 3-OS CI + live-capture job green |
+| M1 | Live capture + JSON/SQLite rules + CLI | A | ✅ Done — live capture classifies; rules survive restart (JSON store; SQLite backlog) |
 | M2 | Anomaly detectors + VPN fingerprint (offline data) | B | Crafted pcap triggers all 3 + VPN flag |
 | M3 | URLhaus blocklist + auto-block | B | Known-bad domain blocked on live/fake stream |
 | M4 | Dashboard backend + WS streaming (fake feed) | C | Charts move; REST works |
@@ -238,8 +242,11 @@ Match → label connection `VPN_DETECTED`; optionally blockable; surfaced in das
 
 ## 10. Getting Started (leader checklist)
 
-- [ ] Assign A / B / C (§2)
-- [ ] Approve integration contract (§4) — schema + IPC + tech stack
-- [ ] Resolve engine baseline: modular vs `dpi_mt.cpp` (§9.1)
-- [ ] Stand up Meson skeleton (M0) as shared first step
-- [ ] Unblock each track with its OWN demo criteria (§5.3, §6.6, §7.4)
+- [x] Stand up Meson skeleton (M0) — build + CI green (all OS + live capture)
+- [x] Resolve engine baseline: modular `include/`+`src/` (§9.1)
+- [x] Approve integration contract (§4) — schema + IPC + tech stack
+- [x] Track A delivered — live capture + JSON rules CLI (M1)
+- [ ] Assign B / C owners (§2)
+- [ ] Unblock Track B with its demo criteria (§6.6)
+- [ ] Unblock Track C with its demo criteria (§7.4)
+- [ ] Decide SQLite backend for rules (backlog, §5.2)
