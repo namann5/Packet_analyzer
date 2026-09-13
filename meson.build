@@ -23,6 +23,8 @@ engine_sources = files(
   'src/connection_tracker.cpp',
   'src/load_balancer.cpp',
   'src/fast_path.cpp',
+  'src/capture_source.cpp',
+  'src/rules_store.cpp',
 )
 
 # ---------------------------------------------------------------------------
@@ -42,6 +44,8 @@ if live_capture
     warning('libpcap not found - building without live capture support')
     message('Install libpcap (Linux: libpcap-dev, Windows: Npcap SDK) to enable live capture')
   endif
+else
+  pcap_dep = disabler()
 endif
 
 # ---------------------------------------------------------------------------
@@ -50,7 +54,18 @@ endif
 dpi_engine = executable(
   'dpi_engine',
   engine_sources,
-  dependencies: [thread_dep],
+  dependencies: [thread_dep, pcap_dep],
+  include_directories: include_directories('include'),
+  install: true,
+)
+
+# ---------------------------------------------------------------------------
+# Rules CLI (persistent rule management - Track A)
+# ---------------------------------------------------------------------------
+dpi_cli = executable(
+  'dpi_cli',
+  files('src/dpi_cli.cpp', 'src/rules_store.cpp', 'src/rule_manager.cpp', 'src/types.cpp'),
+  dependencies: thread_dep,
   include_directories: include_directories('include'),
   install: true,
 )
@@ -58,26 +73,27 @@ dpi_engine = executable(
 # ---------------------------------------------------------------------------
 # Simple packet viewer (baseline tool)
 # ---------------------------------------------------------------------------
-viewer_sources = files(
-  'src/main.cpp',
-  'src/pcap_reader.cpp',
-  'src/packet_parser.cpp',
-)
-
 packet_analyzer = executable(
   'packet_analyzer',
-  viewer_sources,
+  files('src/main.cpp', 'src/pcap_reader.cpp', 'src/packet_parser.cpp'),
   include_directories: include_directories('include'),
 )
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-if meson.is_cross_build() == false and get_option('tests')
+if get_option('tests')
   test(
     'engine_smoke',
     dpi_engine,
     args: ['test_dpi.pcap', 'output_test.pcap', '--block-app', 'YouTube'],
     timeout: 30,
+  )
+
+  test(
+    'rules_cli_persistence',
+    dpi_cli,
+    args: ['add-rule', '--type', 'domain', '--value', '*.example.com', '--store', 'rules_test.json'],
+    timeout: 15,
   )
 endif

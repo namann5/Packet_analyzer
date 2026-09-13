@@ -126,6 +126,37 @@ bool DPIEngine::processFile(const std::string& input_file,
     std::cout << "\n[DPIEngine] Processing: " << input_file << "\n";
     std::cout << "[DPIEngine] Output to:  " << output_file << "\n\n";
     
+    FileCapture source;
+    std::string error;
+    if (!source.open(input_file, error)) {
+        std::cerr << "[DPIEngine] Error: " << error << "\n";
+        return false;
+    }
+    
+    return runCapture(source, output_file);
+}
+
+bool DPIEngine::processLive(const std::string& interface,
+                            const std::string& output_file) {
+    
+    std::cout << "\n[DPIEngine] Live capture on interface: " << interface << "\n";
+    if (!output_file.empty()) {
+        std::cout << "[DPIEngine] Output to:  " << output_file << "\n";
+    }
+    std::cout << "[DPIEngine] Press Ctrl+C to stop.\n\n";
+    
+    LiveCapture source;
+    std::string error;
+    if (!source.open(interface, error)) {
+        std::cerr << "[DPIEngine] Error: " << error << "\n";
+        return false;
+    }
+    
+    return runCapture(source, output_file);
+}
+
+bool DPIEngine::runCapture(CaptureSource& source,
+                           const std::string& output_file) {
     // Initialize if not already done
     if (!rule_manager_) {
         if (!initialize()) {
@@ -133,24 +164,47 @@ bool DPIEngine::processFile(const std::string& input_file,
         }
     }
     
-    // Open output file
-    output_file_.open(output_file, std::ios::binary);
-    if (!output_file_.is_open()) {
-        std::cerr << "[DPIEngine] Error: Cannot open output file\n";
-        return false;
+    // Open output file (optional in live mode)
+    if (!output_file.empty()) {
+        output_file_.open(output_file, std::ios::binary);
+        if (!output_file_.is_open()) {
+            std::cerr << "[DPIEngine] Error: Cannot open output file\n";
+            return false;
+        }
+        if (source.globalHeader()) {
+            writeOutputHeader(*source.globalHeader());
+        }
     }
     
     // Start processing threads
     start();
+    stop_capture_ = false;
     
-    // Start reader thread
-    reader_thread_ = std::thread(&DPIEngine::readerThreadFunc, this, input_file);
+    // Start reader thread against the capture source
+    reader_finished_ = false;
+    reader_thread_ = std::thread(&DPIEngine::readerThreadLoop, this, &source);
     
-    // Wait for completion
-    waitForCompletion();
-    
-    // Give some time for final packets to process
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    if (source.isLive()) {
+        // Live mode: run until stopCapture() is requested (Ctrl+C) or the
+        // reader ends (fatal capture error).
+        while (!stop_capture_.load() && !reader_finished_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        // The reader thread sees the stop flag and finishes; join it.
+        if (reader_thread_.joinable()) {
+            reader_thread_.join();
+        }
+        // Give the pipeline a moment to drain the final packets.
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        processing_complete_ = true;
+    } else {
+        // File mode: reader thread finishes on its own.
+        if (reader_thread_.joinable()) {
+            reader_thread_.join();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        processing_complete_ = true;
+    }
     
     // Stop all threads
     stop();
@@ -160,33 +214,40 @@ bool DPIEngine::processFile(const std::string& input_file,
         output_file_.close();
     }
     
-    // Print final report
+    std::cout << "\n";
+    if (source.isLive()) {
+        std::cout << "[DPIEngine] Live capture stopped.\n";
+    } else {
+        std::cout << "[DPIEngine] Processing complete!\n";
+        std::cout << "[DPIEngine] Output written to: " << output_file << "\n";
+    }
     std::cout << generateReport();
     std::cout << fp_manager_->generateClassificationReport();
     
     return true;
 }
 
-void DPIEngine::readerThreadFunc(const std::string& input_file) {
-    PacketAnalyzer::PcapReader reader;
-    
-    if (!reader.open(input_file)) {
-        std::cerr << "[Reader] Error: Cannot open input file\n";
-        return;
-    }
-    
-    // Write PCAP header to output
-    writeOutputHeader(reader.getGlobalHeader());
-    
-    PacketAnalyzer::RawPacket raw;
+void DPIEngine::readerThreadLoop(CaptureSource* source) {
+    CapturePacket raw;
     PacketAnalyzer::ParsedPacket parsed;
     uint32_t packet_id = 0;
     
     std::cout << "[Reader] Starting packet processing...\n";
     
-    while (reader.readNextPacket(raw)) {
-        // Parse the packet
-        if (!PacketAnalyzer::PacketParser::parse(raw, parsed)) {
+    while (!stop_capture_.load() && source->readNextPacket(raw)) {
+        // Live capture timeouts yield empty packets; keep polling.
+        if (raw.data.empty()) {
+            if (source->isLive()) {
+                continue;
+            }
+            break;
+        }
+        
+        // Parse the packet (CapturePacket is layout-compatible with RawPacket)
+        PacketAnalyzer::RawPacket raw_pkt;
+        raw_pkt.header = raw.header;
+        raw_pkt.data = raw.data;
+        if (!PacketAnalyzer::PacketParser::parse(raw_pkt, parsed)) {
             continue;  // Skip unparseable packets
         }
         
@@ -214,10 +275,10 @@ void DPIEngine::readerThreadFunc(const std::string& input_file) {
     }
     
     std::cout << "[Reader] Finished reading " << packet_id << " packets\n";
-    reader.close();
+    reader_finished_ = true;
 }
 
-PacketJob DPIEngine::createPacketJob(const PacketAnalyzer::RawPacket& raw,
+PacketJob DPIEngine::createPacketJob(const CapturePacket& raw,
                                       const PacketAnalyzer::ParsedPacket& parsed,
                                       uint32_t packet_id) {
     PacketJob job;

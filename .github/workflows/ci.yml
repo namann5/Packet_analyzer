@@ -64,6 +64,34 @@ jobs:
           name: build-logs-${{ matrix.name }}
           path: ${{ env.BUILD_DIR }}/meson-logs/
 
+  # Track A: live capture requires libpcap - build separately on Linux.
+  build-live-capture:
+    name: Build (Linux, live capture)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Meson + Ninja
+        run: pip install meson ninja
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Configure (with live capture)
+        run: meson setup build -Dlive_capture=true
+
+      - name: Build
+        run: meson compile -C build
+
+      - name: Run tests
+        run: meson test -C build --print-errorlogs
+
   dashboard:
     name: Dashboard (Python)
     runs-on: ubuntu-latest

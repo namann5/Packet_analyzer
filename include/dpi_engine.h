@@ -8,6 +8,7 @@
 #include "fast_path.h"
 #include "rule_manager.h"
 #include "connection_tracker.h"
+#include "capture_source.h"
 #include <memory>
 #include <thread>
 #include <atomic>
@@ -73,11 +74,24 @@ public:
     bool processFile(const std::string& input_file, 
                      const std::string& output_file);
     
+    // Capture live traffic from an interface.
+    // interface: network device name (e.g. "eth0")
+    // output_file: optional output PCAP (empty string = no capture output)
+    bool processLive(const std::string& interface,
+                     const std::string& output_file = "");
+    
     // Start the engine (starts all threads)
     void start();
     
     // Stop the engine (stops all threads)
     void stop();
+
+    // Request a graceful stop of live capture (safely callable from a
+    // signal handler - only flips an atomic flag).
+    void stopCapture() { stop_capture_ = true; }
+
+    // Check if live capture has been requested to stop.
+    bool captureStopped() const { return stop_capture_.load(); }
     
     // Wait for processing to complete
     void waitForCompletion();
@@ -153,6 +167,8 @@ private:
     // Control
     std::atomic<bool> running_{false};
     std::atomic<bool> processing_complete_{false};
+    std::atomic<bool> stop_capture_{false};
+    std::atomic<bool> reader_finished_{false};
     
     // Reader thread (separate for PCAP input)
     std::thread reader_thread_;
@@ -167,11 +183,14 @@ private:
     // Write a packet to output file
     void writeOutputPacket(const PacketJob& job);
     
-    // Reader function
-    void readerThreadFunc(const std::string& input_file);
+    // Shared processing entry for file and live sources.
+    bool runCapture(CaptureSource& source, const std::string& output_file);
+
+    // Reader loop generic over the capture source.
+    void readerThreadLoop(CaptureSource* source);
     
     // Convert ParsedPacket to PacketJob
-    PacketJob createPacketJob(const PacketAnalyzer::RawPacket& raw,
+    PacketJob createPacketJob(const CapturePacket& raw,
                                const PacketAnalyzer::ParsedPacket& parsed,
                                uint32_t packet_id);
 };
