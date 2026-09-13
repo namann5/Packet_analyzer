@@ -35,17 +35,20 @@ thread_dep = dependency('threads')
 # ---------------------------------------------------------------------------
 # Optional: libpcap for live capture (Track A). Enabled via -Dlive_capture=true
 # ---------------------------------------------------------------------------
+# NOTE: do NOT put a bare disabler() into a target's dependencies - meson
+# silently drops the entire target (and its tests) when a dependency is a
+# disabler. Only append pcap_dep when libpcap is actually available.
 live_capture = get_option('live_capture')
+pcap_deps = []
 if live_capture
   pcap_dep = dependency('libpcap', required: false)
   if pcap_dep.found()
     add_project_arguments('-DHAVE_LIBPCAP', language: 'cpp')
+    pcap_deps += pcap_dep
   else
     warning('libpcap not found - building without live capture support')
     message('Install libpcap (Linux: libpcap-dev, Windows: Npcap SDK) to enable live capture')
   endif
-else
-  pcap_dep = disabler()
 endif
 
 # ---------------------------------------------------------------------------
@@ -54,7 +57,7 @@ endif
 dpi_engine = executable(
   'dpi_engine',
   engine_sources,
-  dependencies: [thread_dep, pcap_dep],
+  dependencies: [thread_dep] + pcap_deps,
   include_directories: include_directories('include'),
   install: true,
 )
@@ -83,17 +86,25 @@ packet_analyzer = executable(
 # Tests
 # ---------------------------------------------------------------------------
 if get_option('tests')
+  # Absolute paths make both tests independent of meson test's working dir.
   test(
     'engine_smoke',
     dpi_engine,
-    args: ['test_dpi.pcap', 'output_test.pcap', '--block-app', 'YouTube'],
+    args: [
+      meson.current_source_dir() / 'test_dpi.pcap',
+      meson.current_build_dir() / 'output_test.pcap',
+      '--block-app', 'YouTube',
+    ],
     timeout: 30,
   )
 
   test(
     'rules_cli_persistence',
     dpi_cli,
-    args: ['add-rule', '--type', 'domain', '--value', '*.example.com', '--store', 'rules_test.json'],
+    args: [
+      'add-rule', '--type', 'domain', '--value', '*.example.com',
+      '--store', meson.current_build_dir() / 'rules_test.json',
+    ],
     timeout: 15,
   )
 endif

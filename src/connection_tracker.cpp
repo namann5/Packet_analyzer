@@ -170,14 +170,14 @@ GlobalConnectionTable::GlobalConnectionTable(size_t num_fps) {
 }
 
 void GlobalConnectionTable::registerTracker(int fp_id, ConnectionTracker* tracker) {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     if (fp_id < static_cast<int>(trackers_.size())) {
         trackers_[fp_id] = tracker;
     }
 }
 
 GlobalConnectionTable::GlobalStats GlobalConnectionTable::getGlobalStats() const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     
     GlobalStats stats;
     stats.total_active_connections = 0;
@@ -219,16 +219,16 @@ std::string GlobalConnectionTable::generateReport() const {
     auto stats = getGlobalStats();
     
     std::ostringstream ss;
-    ss << "\n╔══════════════════════════════════════════════════════════════╗\n";
-    ss << "║               CONNECTION STATISTICS REPORT                    ║\n";
-    ss << "╠══════════════════════════════════════════════════════════════╣\n";
+    ss << "\nâ•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—\n";
+    ss << "â•‘               CONNECTION STATISTICS REPORT                    â•‘\n";
+    ss << "â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£\n";
     
-    ss << "║ Active Connections:     " << std::setw(10) << stats.total_active_connections << "                          ║\n";
-    ss << "║ Total Connections Seen: " << std::setw(10) << stats.total_connections_seen << "                          ║\n";
+    ss << "â•‘ Active Connections:     " << std::setw(10) << stats.total_active_connections << "                          â•‘\n";
+    ss << "â•‘ Total Connections Seen: " << std::setw(10) << stats.total_connections_seen << "                          â•‘\n";
     
-    ss << "╠══════════════════════════════════════════════════════════════╣\n";
-    ss << "║                    APPLICATION BREAKDOWN                      ║\n";
-    ss << "╠══════════════════════════════════════════════════════════════╣\n";
+    ss << "â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£\n";
+    ss << "â•‘                    APPLICATION BREAKDOWN                      â•‘\n";
+    ss << "â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£\n";
     
     // Calculate total for percentages
     size_t total = 0;
@@ -244,27 +244,27 @@ std::string GlobalConnectionTable::generateReport() const {
     
     for (const auto& pair : sorted_apps) {
         double pct = total > 0 ? (100.0 * pair.second / total) : 0;
-        ss << "║ " << std::setw(20) << std::left << appTypeToString(pair.first)
+        ss << "â•‘ " << std::setw(20) << std::left << appTypeToString(pair.first)
            << std::setw(10) << std::right << pair.second
-           << " (" << std::fixed << std::setprecision(1) << std::setw(5) << pct << "%)           ║\n";
+           << " (" << std::fixed << std::setprecision(1) << std::setw(5) << pct << "%)           â•‘\n";
     }
     
     if (!stats.top_domains.empty()) {
-        ss << "╠══════════════════════════════════════════════════════════════╣\n";
-        ss << "║                      TOP DOMAINS                             ║\n";
-        ss << "╠══════════════════════════════════════════════════════════════╣\n";
+        ss << "â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£\n";
+        ss << "â•‘                      TOP DOMAINS                             â•‘\n";
+        ss << "â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£\n";
         
         for (const auto& pair : stats.top_domains) {
             std::string domain = pair.first;
             if (domain.length() > 35) {
                 domain = domain.substr(0, 32) + "...";
             }
-            ss << "║ " << std::setw(40) << std::left << domain
-               << std::setw(10) << std::right << pair.second << "           ║\n";
+            ss << "â•‘ " << std::setw(40) << std::left << domain
+               << std::setw(10) << std::right << pair.second << "           â•‘\n";
         }
     }
     
-    ss << "╚══════════════════════════════════════════════════════════════╝\n";
+    ss << "â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•\n";
     
     return ss.str();
 }

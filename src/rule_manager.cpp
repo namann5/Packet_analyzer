@@ -39,7 +39,7 @@ std::string RuleManager::ipToString(uint32_t ip) {
 }
 
 void RuleManager::blockIP(uint32_t ip) {
-    std::unique_lock<std::shared_mutex> lock(ip_mutex_);
+    std::lock_guard<std::mutex> lock(ip_mutex_);
     blocked_ips_.insert(ip);
     std::cout << "[RuleManager] Blocked IP: " << ipToString(ip) << std::endl;
 }
@@ -49,7 +49,7 @@ void RuleManager::blockIP(const std::string& ip) {
 }
 
 void RuleManager::unblockIP(uint32_t ip) {
-    std::unique_lock<std::shared_mutex> lock(ip_mutex_);
+    std::lock_guard<std::mutex> lock(ip_mutex_);
     blocked_ips_.erase(ip);
     std::cout << "[RuleManager] Unblocked IP: " << ipToString(ip) << std::endl;
 }
@@ -59,12 +59,12 @@ void RuleManager::unblockIP(const std::string& ip) {
 }
 
 bool RuleManager::isIPBlocked(uint32_t ip) const {
-    std::shared_lock<std::shared_mutex> lock(ip_mutex_);
+    std::lock_guard<std::mutex> lock(ip_mutex_);
     return blocked_ips_.count(ip) > 0;
 }
 
 std::vector<std::string> RuleManager::getBlockedIPs() const {
-    std::shared_lock<std::shared_mutex> lock(ip_mutex_);
+    std::lock_guard<std::mutex> lock(ip_mutex_);
     std::vector<std::string> result;
     for (uint32_t ip : blocked_ips_) {
         result.push_back(ipToString(ip));
@@ -77,24 +77,24 @@ std::vector<std::string> RuleManager::getBlockedIPs() const {
 // ============================================================================
 
 void RuleManager::blockApp(AppType app) {
-    std::unique_lock<std::shared_mutex> lock(app_mutex_);
+    std::lock_guard<std::mutex> lock(app_mutex_);
     blocked_apps_.insert(app);
     std::cout << "[RuleManager] Blocked app: " << appTypeToString(app) << std::endl;
 }
 
 void RuleManager::unblockApp(AppType app) {
-    std::unique_lock<std::shared_mutex> lock(app_mutex_);
+    std::lock_guard<std::mutex> lock(app_mutex_);
     blocked_apps_.erase(app);
     std::cout << "[RuleManager] Unblocked app: " << appTypeToString(app) << std::endl;
 }
 
 bool RuleManager::isAppBlocked(AppType app) const {
-    std::shared_lock<std::shared_mutex> lock(app_mutex_);
+    std::lock_guard<std::mutex> lock(app_mutex_);
     return blocked_apps_.count(app) > 0;
 }
 
 std::vector<AppType> RuleManager::getBlockedApps() const {
-    std::shared_lock<std::shared_mutex> lock(app_mutex_);
+    std::lock_guard<std::mutex> lock(app_mutex_);
     return std::vector<AppType>(blocked_apps_.begin(), blocked_apps_.end());
 }
 
@@ -103,7 +103,7 @@ std::vector<AppType> RuleManager::getBlockedApps() const {
 // ============================================================================
 
 void RuleManager::blockDomain(const std::string& domain) {
-    std::unique_lock<std::shared_mutex> lock(domain_mutex_);
+    std::lock_guard<std::mutex> lock(domain_mutex_);
     
     if (domain.find('*') != std::string::npos) {
         domain_patterns_.push_back(domain);
@@ -115,7 +115,7 @@ void RuleManager::blockDomain(const std::string& domain) {
 }
 
 void RuleManager::unblockDomain(const std::string& domain) {
-    std::unique_lock<std::shared_mutex> lock(domain_mutex_);
+    std::lock_guard<std::mutex> lock(domain_mutex_);
     
     if (domain.find('*') != std::string::npos) {
         auto it = std::find(domain_patterns_.begin(), domain_patterns_.end(), domain);
@@ -150,7 +150,7 @@ bool RuleManager::domainMatchesPattern(const std::string& domain, const std::str
 }
 
 bool RuleManager::isDomainBlocked(const std::string& domain) const {
-    std::shared_lock<std::shared_mutex> lock(domain_mutex_);
+    std::lock_guard<std::mutex> lock(domain_mutex_);
     
     // Check exact match
     if (blocked_domains_.count(domain) > 0) {
@@ -176,7 +176,7 @@ bool RuleManager::isDomainBlocked(const std::string& domain) const {
 }
 
 std::vector<std::string> RuleManager::getBlockedDomains() const {
-    std::shared_lock<std::shared_mutex> lock(domain_mutex_);
+    std::lock_guard<std::mutex> lock(domain_mutex_);
     std::vector<std::string> result(blocked_domains_.begin(), blocked_domains_.end());
     result.insert(result.end(), domain_patterns_.begin(), domain_patterns_.end());
     return result;
@@ -187,18 +187,18 @@ std::vector<std::string> RuleManager::getBlockedDomains() const {
 // ============================================================================
 
 void RuleManager::blockPort(uint16_t port) {
-    std::unique_lock<std::shared_mutex> lock(port_mutex_);
+    std::lock_guard<std::mutex> lock(port_mutex_);
     blocked_ports_.insert(port);
     std::cout << "[RuleManager] Blocked port: " << port << std::endl;
 }
 
 void RuleManager::unblockPort(uint16_t port) {
-    std::unique_lock<std::shared_mutex> lock(port_mutex_);
+    std::lock_guard<std::mutex> lock(port_mutex_);
     blocked_ports_.erase(port);
 }
 
 bool RuleManager::isPortBlocked(uint16_t port) const {
-    std::shared_lock<std::shared_mutex> lock(port_mutex_);
+    std::lock_guard<std::mutex> lock(port_mutex_);
     return blocked_ports_.count(port) > 0;
 }
 
@@ -266,7 +266,7 @@ bool RuleManager::saveRules(const std::string& filename) const {
     // Save blocked ports
     file << "\n[BLOCKED_PORTS]\n";
     {
-        std::shared_lock<std::shared_mutex> lock(port_mutex_);
+        std::lock_guard<std::mutex> lock(port_mutex_);
         for (uint16_t port : blocked_ports_) {
             file << port << "\n";
         }
@@ -321,20 +321,20 @@ bool RuleManager::loadRules(const std::string& filename) {
 
 void RuleManager::clearAll() {
     {
-        std::unique_lock<std::shared_mutex> lock(ip_mutex_);
+        std::lock_guard<std::mutex> lock(ip_mutex_);
         blocked_ips_.clear();
     }
     {
-        std::unique_lock<std::shared_mutex> lock(app_mutex_);
+        std::lock_guard<std::mutex> lock(app_mutex_);
         blocked_apps_.clear();
     }
     {
-        std::unique_lock<std::shared_mutex> lock(domain_mutex_);
+        std::lock_guard<std::mutex> lock(domain_mutex_);
         blocked_domains_.clear();
         domain_patterns_.clear();
     }
     {
-        std::unique_lock<std::shared_mutex> lock(port_mutex_);
+        std::lock_guard<std::mutex> lock(port_mutex_);
         blocked_ports_.clear();
     }
     std::cout << "[RuleManager] All rules cleared" << std::endl;
@@ -344,19 +344,19 @@ RuleManager::RuleStats RuleManager::getStats() const {
     RuleStats stats;
     
     {
-        std::shared_lock<std::shared_mutex> lock(ip_mutex_);
+        std::lock_guard<std::mutex> lock(ip_mutex_);
         stats.blocked_ips = blocked_ips_.size();
     }
     {
-        std::shared_lock<std::shared_mutex> lock(app_mutex_);
+        std::lock_guard<std::mutex> lock(app_mutex_);
         stats.blocked_apps = blocked_apps_.size();
     }
     {
-        std::shared_lock<std::shared_mutex> lock(domain_mutex_);
+        std::lock_guard<std::mutex> lock(domain_mutex_);
         stats.blocked_domains = blocked_domains_.size() + domain_patterns_.size();
     }
     {
-        std::shared_lock<std::shared_mutex> lock(port_mutex_);
+        std::lock_guard<std::mutex> lock(port_mutex_);
         stats.blocked_ports = blocked_ports_.size();
     }
     

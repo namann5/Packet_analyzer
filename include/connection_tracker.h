@@ -3,7 +3,7 @@
 
 #include "types.h"
 #include <unordered_map>
-#include <shared_mutex>
+#include <mutex>
 #include <vector>
 #include <chrono>
 #include <functional>
@@ -116,7 +116,7 @@ public:
 
 private:
     std::vector<ConnectionTracker*> trackers_;
-    mutable std::shared_mutex mutex_;
+    mutable std::mutex mutex_;
 };
 
 } // namespace DPI

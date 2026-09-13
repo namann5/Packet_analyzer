@@ -16,7 +16,8 @@ LoadBalancer::LoadBalancer(int lb_id,
       num_fps_(fp_queues.size()),
       input_queue_(10000),
       fp_queues_(std::move(fp_queues)),
-      per_fp_counts_(fp_queues.size()) {
+      // Size captured before the move above; the moved-from vector is empty.
+      per_fp_counts_(num_fps_) {
 }
 
 LoadBalancer::~LoadBalancer() {
