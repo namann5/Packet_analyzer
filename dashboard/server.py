@@ -41,6 +41,9 @@ MAX_EVENTS = 100
 # Default packet size (bytes) fallback when contract-compliant app_classified events omit wire length
 DEFAULT_PACKET_BYTES = 512
 
+# Maximum frame/buffer size (64 KB) to protect against memory exhaustion from un-delimited streams
+MAX_IPC_FRAME_SIZE = 64 * 1024
+
 
 # ---------------------------------------------------------------------------
 # In-memory state (updated by IPC bridge)
@@ -237,6 +240,12 @@ async def handle_engine_connection(reader: asyncio.StreamReader, writer: asyncio
             if not chunk:
                 break
             buf += chunk
+            if len(buf) > MAX_IPC_FRAME_SIZE:
+                print(
+                    f"[ipc] Warning: frame size limit exceeded ({len(buf)} > "
+                    f"{MAX_IPC_FRAME_SIZE} bytes) from {peer}; closing connection."
+                )
+                break
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 line = line.strip()
