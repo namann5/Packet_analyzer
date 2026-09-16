@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PACKET ANALYZER v2.0 — DPI ENGINE</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    /* ── Fonts & Reset ──────────────────────────────────── */
+    @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --green:      #00ff41;
+      --green-dim:  #00b32c;
+      --green-dark: #003b0f;
+      --green-bg:   #020c02;
+      --amber:      #ffb300;
+      --amber-dim:  #a87800;
+      --red:        #ff3131;
+      --red-dim:    #8b0000;
+      --border:     #0d3d0d;
+      --text-dim:   #2e7d32;
+      --bg:         #040d04;
+    }
+
+    html { font-size: 14px; }
+    body {
+      font-family: 'Share Tech Mono', 'Courier New', monospace;
+      background: var(--bg);
+      color: var(--green);
+      min-height: 100vh;
+      /* Subtle scanline overlay */
+      background-image: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.08) 2px,
+        rgba(0,0,0,0.08) 4px
+      );
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border);
+      background: #020802;
+    }
+    .title-block { display: flex; align-items: center; gap: 12px; }
+    .title-text {
+      font-size: 1.05rem; letter-spacing: 0.12em;
+      color: var(--green);
+      text-shadow: 0 0 10px var(--green);
+    }
+    .cursor {
+      display: inline-block; width: 10px; height: 1.1em;
+      background: var(--green);
+      animation: blink 1s step-end infinite;
+      vertical-align: text-bottom;
+      margin-left: 2px;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+    .header-meta { font-size: 0.72rem; color: var(--text-dim); letter-spacing: .08em; }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+
+    /* Status */
+    #status-badge {
+      display: flex; align-items: center; gap: 7px;
+      font-size: 0.72rem; letter-spacing: .1em;
+      border: 1px solid var(--border);
+      padding: 4px 12px; border-radius: 2px;
+    }
+    #status-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--red-dim);
+    }
+    #status-dot.live {
+      background: var(--green);
+      box-shadow: 0 0 6px var(--green);
+      animation: pulse-green 1.4s infinite;
+    }
+    @keyframes pulse-green {
+      0%,100%{ box-shadow: 0 0 4px var(--green); }
+      50%    { box-shadow: 0 0 12px var(--green); }
+    }
+
+    /* ── Divider ─────────────────────────────────────────── */
+    .div-line {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 0;
+    }
+
+    /* ── Stat row ────────────────────────────────────────── */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      border-bottom: 1px solid var(--border);
+    }
+    @media(max-width:1100px){ .stat-grid{ grid-template-columns: repeat(4,1fr); } }
+    @media(max-width:650px) { .stat-grid{ grid-template-columns: repeat(2,1fr); } }
+
+    .stat-card {
+      padding: 14px 16px;
+      border-right: 1px solid var(--border);
+      position: relative;
+    }
+    .stat-card:last-child { border-right: none; }
+    .stat-card .label {
+      font-size: 0.65rem; color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: .1em;
+      margin-bottom: 6px;
+    }
+    .stat-card .value {
+      font-size: 1.45rem;
+      color: var(--green);
+      text-shadow: 0 0 8px var(--green-dim);
+    }
+    .stat-card.danger .value {
+      color: var(--red);
+      text-shadow: 0 0 10px var(--red-dim);
+      animation: flicker 3s infinite;
+    }
+    .stat-card.warn .value {
+      color: var(--amber);
+      text-shadow: 0 0 8px var(--amber-dim);
+    }
+    @keyframes flicker {
+      0%,97%,100%{ opacity:1; }
+      98%{ opacity:0.7; }
+      99%{ opacity:1; }
+    }
+
+    /* ── Section bar ─────────────────────────────────────── */
+    .section-bar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 5px 16px;
+      background: #020802;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.68rem; color: var(--text-dim);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .section-bar::before { content: '[ '; color: var(--green-dim); }
+    .section-bar::after  { content: ' ]'; color: var(--green-dim); }
+
+    /* ── Chart grid ──────────────────────────────────────── */
+    .chart-grid {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr 1fr;
+      border-bottom: 1px solid var(--border);
+    }
+    @media(max-width:1000px){ .chart-grid{ grid-template-columns: 1fr 1fr; } }
+    @media(max-width:650px) { .chart-grid{ grid-template-columns: 1fr; } }
+
+    .chart-card {
+      padding: 14px;
+      border-right: 1px solid var(--border);
+    }
+    .chart-card:last-child { border-right: none; }
+    .chart-card h2 {
+      font-size: 0.68rem; color: var(--text-dim);
+      letter-spacing: .1em; text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .chart-card h2 span { color: var(--green); }
+    .chart-card canvas { max-height: 185px; }
+
+    /* ── Bottom panels ────────────────────────────────────── */
+    .bottom-grid {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr;
+      border-bottom: 1px solid var(--border);
+    }
+    @media(max-width:800px){ .bottom-grid{ grid-template-columns:1fr; } }
+
+    .panel {
+      padding: 12px 16px;
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .panel:last-child { border-right: none; }
+    .panel-header {
+      font-size: 0.68rem; color: var(--text-dim);
+      letter-spacing: .1em; text-transform: uppercase;
+      margin-bottom: 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px dashed var(--border);
+      display: flex; justify-content: space-between;
+    }
+    .panel-header span { color: var(--green); }
+
+    /* Alert feed — terminal log style */
+    #alert-feed { list-style: none; max-height: 185px; overflow-y: auto; }
+    #alert-feed li {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 4px 0;
+      font-size: 0.72rem;
+      border-bottom: 1px solid #061206;
+      animation: fadeSlide 0.25s ease;
+    }
+    @keyframes fadeSlide{ from{opacity:0;transform:translateX(-4px)} to{opacity:1} }
+    #alert-feed li:last-child { border-bottom: none; }
+
+    .ts { color: var(--text-dim); white-space: nowrap; font-size: 0.68rem; }
+    .badge {
+      display: inline-block; padding: 0px 6px;
+      font-size: 0.65rem; font-weight: 700;
+      letter-spacing: .05em; white-space: nowrap;
+      border: 1px solid; border-radius: 1px;
+    }
+    .badge.PORT_SCAN  { color: #ff9f00; border-color: #ff9f00; }
+    .badge.SYN_FLOOD  { color: var(--red); border-color: var(--red); }
+    .badge.DNS_TUNNEL { color: #00e5ff; border-color: #00e5ff; }
+    .badge.OTHER      { color: var(--text-dim); border-color: var(--text-dim); }
+    .alert-detail { color: #1a6e1a; word-break: break-all; }
+
+    /* Top talkers — htop style */
+    #talkers-list { list-style: none; max-height: 185px; overflow-y: auto; }
+    #talkers-list li {
+      display: grid;
+      grid-template-columns: 90px 1fr 55px;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+      font-size: 0.72rem;
+      border-bottom: 1px solid #061206;
+    }
+    #talkers-list li:last-child { border-bottom: none; }
+    .talker-name { color: var(--green); }
+    .bar-track {
+      height: 8px; background: #071407; border: 1px solid var(--border);
+      border-radius: 1px; overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      background: var(--green);
+      box-shadow: 0 0 4px var(--green-dim);
+      transition: width 0.6s ease;
+    }
+    .talker-pct { color: var(--text-dim); text-align: right; }
+
+    /* ── Action bar ───────────────────────────────────────── */
+    .action-bar {
+      display: flex; align-items: center; gap: 14px;
+      flex-wrap: wrap;
+      padding: 10px 16px;
+      background: #020802;
+    }
+    .prompt-sym { color: var(--green-dim); font-size: 0.85rem; }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 16px;
+      background: transparent;
+      border: 1px solid;
+      border-radius: 1px;
+      font-family: inherit; font-size: 0.75rem;
+      letter-spacing: .08em;
+      cursor: pointer;
+      transition: all 0.15s;
+      text-transform: uppercase;
+    }
+    .btn-html {
+      border-color: var(--green-dim);
+      color: var(--green);
+    }
+    .btn-html:hover {
+      background: var(--green-dark);
+      box-shadow: 0 0 10px var(--green-dim);
+    }
+    .btn-pdf {
+      border-color: var(--amber-dim);
+      color: var(--amber);
+    }
+    .btn-pdf:hover {
+      background: #1a1000;
+      box-shadow: 0 0 10px var(--amber-dim);
+    }
+    .btn-clear {
+      border-color: var(--text-dim);
+      color: var(--text-dim);
+    }
+    .btn-clear:hover { border-color: var(--red); color: var(--red); }
+    .uptime { margin-left: auto; font-size: 0.68rem; color: var(--text-dim); }
+
+    @media(max-width: 650px) {
+      .action-bar { gap: 8px; }
+      .uptime { width: 100%; margin-left: 0; margin-top: 4px; }
+    }
+
+    /* ── Scrollbar ────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: #020802; }
+    ::-webkit-scrollbar-thumb { background: var(--border); }
+
+    /* ── Toast ───────────────────────────────────────────── */
+    #toast {
+      position: fixed; bottom: 20px; right: 20px;
+      background: #020802; border: 1px solid var(--green-dim);
+      padding: 10px 16px; font-size: 0.75rem;
+      color: var(--green); letter-spacing: .06em;
+      transform: translateY(60px); opacity: 0;
+      transition: all 0.25s; z-index: 999;
+    }
+    #toast.show { transform: translateY(0); opacity: 1; }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header>
+  <div class="title-block">
+    <div>
+      <div class="title-text">PACKET ANALYZER v2.0 — DPI ENGINE<span class="cursor"></span></div>
+      <div class="header-meta">DEEP PACKET INSPECTION &nbsp;|&nbsp; REAL-TIME MONITOR &nbsp;|&nbsp; TRACK-C DASHBOARD</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div id="status-badge">
+      <div id="status-dot"></div>
+      <span id="status-text">OFFLINE</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── Stat Cards ── -->
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="label">// PACKETS</div>
+    <div class="value" id="s-packets">0</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">// BYTES</div>
+    <div class="value" id="s-bytes">0 B</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">// THROUGHPUT</div>
+    <div class="value" id="s-throughput">0 bps</div>
+  </div>
+  <div class="stat-card danger">
+    <div class="label">// BLOCKED</div>
+    <div class="value" id="s-blocked">0</div>
+  </div>
+  <div class="stat-card warn">
+    <div class="label">// PORT SCANS</div>
+    <div class="value" id="s-scans">0</div>
+  </div>
+  <div class="stat-card warn">
+    <div class="label">// SYN FLOODS</div>
+    <div class="value" id="s-floods">0</div>
+  </div>
+  <div class="stat-card warn">
+    <div class="label">// DNS TUNNELS</div>
+    <div class="value" id="s-tunnels">0</div>
+  </div>
+</div>
+
+<!-- ── Charts section ── -->
+<div class="section-bar">LIVE TRAFFIC ANALYSIS</div>
+<div class="chart-grid">
+  <div class="chart-card">
+    <h2>// <span>THROUGHPUT</span> — bps (last 30s)</h2>
+    <canvas id="throughput-chart"></canvas>
+  </div>
+  <div class="chart-card">
+    <h2>// <span>APP BREAKDOWN</span></h2>
+    <canvas id="app-chart"></canvas>
+  </div>
+  <div class="chart-card">
+    <h2>// <span>BLOCKED</span> BY REASON</h2>
+    <canvas id="blocked-chart"></canvas>
+  </div>
+</div>
+
+<!-- ── Bottom panels ── -->
+<div class="section-bar">SECURITY CONSOLE</div>
+<div class="bottom-grid">
+  <div class="panel">
+    <div class="panel-header">
+      <span>ALERT LOG</span>
+      <span id="alert-count">0 events</span>
+    </div>
+    <ul id="alert-feed">
+      <li><span class="ts">--:--:--</span><span class="alert-detail">Monitoring… no anomalies detected.</span></li>
+    </ul>
+  </div>
+  <div class="panel">
+    <div class="panel-header">
+      <span>TOP TALKERS</span>
+      <span id="talker-count">0 apps</span>
+    </div>
+    <ul id="talkers-list">
+      <li>
+        <span class="talker-name">--</span>
+        <div class="bar-track"><div class="bar-fill" style="width:0%"></div></div>
+        <span class="talker-pct">--</span>
+      </li>
+    </ul>
+  </div>
+</div>
+
+<!-- ── Action bar ── -->
+<div class="action-bar">
+  <span class="prompt-sym">$&gt;</span>
+  <button class="btn btn-html" onclick="exportReport('html')">[ EXPORT HTML ]</button>
+  <button class="btn btn-pdf"  onclick="exportReport('pdf')"> [ EXPORT PDF  ]</button>
+  <button class="btn btn-clear" onclick="clearAlerts()">       [ CLEAR LOG   ]</button>
+  <span class="uptime" id="uptime-display">UPTIME: 00:00:00</span>
+</div>
+
+<div id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
