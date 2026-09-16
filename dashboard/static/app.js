@@ -1,186 +1,230 @@
 /**
- * Track C — Dashboard Frontend
- * Connects to the FastAPI WebSocket, updates Chart.js charts + UI panels live.
+ * Track C — Dashboard Frontend (Terminal Edition)
+ * WebSocket client + Chart.js live updates styled for terminal aesthetic.
  */
-
 "use strict";
 
-// ── Chart colour palette ─────────────────────────────────────────────────────
-const PALETTE = [
-  "#3b82f6","#22c55e","#f59e0b","#ef4444","#a855f7",
-  "#06b6d4","#ec4899","#84cc16","#f97316","#6366f1",
-];
+// ── Chart theme ──────────────────────────────────────────────────────────────
+const GREEN      = "#00ff41";
+const GREEN_DIM  = "#00b32c";
+const AMBER      = "#ffb300";
+const RED        = "#ff3131";
+const CYAN       = "#00e5ff";
+const GRID_COLOR = "rgba(0,180,50,0.07)";
+const TICK_COLOR = "#1a5c1a";
 
-// ── Throughput history (last 30 s) ───────────────────────────────────────────
-const THROUGHPUT_MAX_POINTS = 30;
-const throughputData = {
-  labels: Array.from({length: THROUGHPUT_MAX_POINTS}, (_, i) => `${i - THROUGHPUT_MAX_POINTS + 1}s`),
-  values: new Array(THROUGHPUT_MAX_POINTS).fill(0),
-};
+const APP_COLORS = [GREEN, AMBER, RED, CYAN, "#ff6600", "#cc00ff", "#00ffcc", "#ff0099", "#99ff00", "#ff9900"];
 
-// ── Chart instances ──────────────────────────────────────────────────────────
+// ── Throughput ring buffer ───────────────────────────────────────────────────
+const N = 30;
+const tpLabels = Array.from({length: N}, (_, i) => i === N - 1 ? "now" : `${i - N + 1}s`);
+const tpValues = new Array(N).fill(0);
+
+// ── Uptime counter ───────────────────────────────────────────────────────────
+let startTime = Date.now();
+setInterval(() => {
+  const s = Math.floor((Date.now() - startTime) / 1000);
+  const h = String(Math.floor(s / 3600)).padStart(2, "0");
+  const m = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
+  const sec = String(s % 60).padStart(2, "0");
+  const el = document.getElementById("uptime-display");
+  if (el) el.textContent = `UPTIME: ${h}:${m}:${sec}`;
+}, 1000);
+
+// ── Chart factory ────────────────────────────────────────────────────────────
+function terminalDefaults(extra = {}) {
+  return {
+    responsive: true,
+    maintainAspectRatio: true,
+    animation: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: TICK_COLOR, font: { family: "Share Tech Mono, monospace", size: 10 }, maxTicksLimit: 6 },
+           grid: { color: GRID_COLOR }, border: { color: GRID_COLOR } },
+      y: { ticks: { color: TICK_COLOR, font: { family: "Share Tech Mono, monospace", size: 10 } },
+           grid: { color: GRID_COLOR }, border: { color: GRID_COLOR }, beginAtZero: true },
+    },
+    ...extra,
+  };
+}
+
 let throughputChart, appChart, blockedChart;
 
 function initCharts() {
-  // Throughput line chart
+  // Throughput — green line
   throughputChart = new Chart(
     document.getElementById("throughput-chart").getContext("2d"),
     {
       type: "line",
       data: {
-        labels: throughputData.labels,
+        labels: tpLabels,
         datasets: [{
-          label: "Throughput (bps)",
-          data: throughputData.values,
-          borderColor: "#3b82f6",
-          backgroundColor: "rgba(59,130,246,0.12)",
-          borderWidth: 2,
+          data: tpValues,
+          borderColor: GREEN,
+          backgroundColor: "rgba(0,255,65,0.06)",
+          borderWidth: 1.5,
           pointRadius: 0,
-          tension: 0.35,
+          tension: 0.3,
           fill: true,
+        }],
+      },
+      options: terminalDefaults(),
+    }
+  );
+
+  // App breakdown — donut
+  appChart = new Chart(
+    document.getElementById("app-chart").getContext("2d"),
+    {
+      type: "doughnut",
+      data: {
+        labels: [],
+        datasets: [{
+          data: [],
+          backgroundColor: APP_COLORS,
+          borderColor: "#040d04",
+          borderWidth: 2,
         }],
       },
       options: {
         animation: false,
         responsive: true,
         maintainAspectRatio: true,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { ticks: { color: "#64748b", maxTicksLimit: 6 }, grid: { color: "#1e293b" } },
-          y: { ticks: { color: "#64748b" }, grid: { color: "#334155" }, beginAtZero: true },
-        },
-      },
-    }
-  );
-
-  // App breakdown donut
-  appChart = new Chart(
-    document.getElementById("app-chart").getContext("2d"),
-    {
-      type: "doughnut",
-      data: { labels: [], datasets: [{ data: [], backgroundColor: PALETTE, borderWidth: 0 }] },
-      options: {
-        animation: false,
-        responsive: true,
-        maintainAspectRatio: true,
+        cutout: "62%",
         plugins: {
-          legend: { position: "right", labels: { color: "#94a3b8", boxWidth: 12 } },
+          legend: {
+            display: true,
+            position: "right",
+            labels: {
+              color: TICK_COLOR,
+              font: { family: "Share Tech Mono, monospace", size: 10 },
+              boxWidth: 10,
+              padding: 8,
+            },
+          },
         },
       },
     }
   );
 
-  // Blocked-by-reason bar chart
+  // Blocked by reason — bar
   blockedChart = new Chart(
     document.getElementById("blocked-chart").getContext("2d"),
     {
       type: "bar",
-      data: { labels: [], datasets: [{ label: "Blocked", data: [], backgroundColor: "#ef4444", borderRadius: 4 }] },
-      options: {
-        animation: false,
-        responsive: true,
-        maintainAspectRatio: true,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { ticks: { color: "#64748b" }, grid: { color: "#1e293b" } },
-          y: { ticks: { color: "#64748b" }, grid: { color: "#334155" }, beginAtZero: true },
-        },
+      data: {
+        labels: [],
+        datasets: [{
+          data: [],
+          backgroundColor: RED,
+          borderColor: "#8b0000",
+          borderWidth: 1,
+          borderRadius: 0,
+        }],
       },
+      options: terminalDefaults({
+        plugins: { legend: { display: false } },
+      }),
     }
   );
 }
 
-// ── Helper: format bytes ─────────────────────────────────────────────────────
+// ── Format helpers ───────────────────────────────────────────────────────────
 function fmtBytes(b) {
   if (b >= 1e9) return (b / 1e9).toFixed(2) + " GB";
   if (b >= 1e6) return (b / 1e6).toFixed(2) + " MB";
   if (b >= 1e3) return (b / 1e3).toFixed(1) + " KB";
   return b + " B";
 }
-
 function fmtBps(bps) {
   if (bps >= 1e6) return (bps / 1e6).toFixed(2) + " Mbps";
   if (bps >= 1e3) return (bps / 1e3).toFixed(1) + " Kbps";
   return Math.round(bps) + " bps";
 }
-
-// ── Update stat cards ────────────────────────────────────────────────────────
-function updateStats(snap) {
-  document.getElementById("s-packets").textContent   = snap.total_packets.toLocaleString();
-  document.getElementById("s-bytes").textContent     = fmtBytes(snap.total_bytes);
-  document.getElementById("s-throughput").textContent = fmtBps(snap.throughput_bps);
-  document.getElementById("s-blocked").textContent   = snap.blocked_total.toLocaleString();
-  document.getElementById("s-scans").textContent     = snap.scan_alerts;
-  document.getElementById("s-floods").textContent    = snap.syn_flood_alerts;
-  document.getElementById("s-tunnels").textContent   = snap.dns_tunnel_alerts;
+function nowTs() {
+  return new Date().toLocaleTimeString("en-GB", { hour12: false });
 }
 
-// ── Update throughput chart ──────────────────────────────────────────────────
+// ── Stat cards ───────────────────────────────────────────────────────────────
+function updateStats(snap) {
+  document.getElementById("s-packets").textContent    = snap.total_packets.toLocaleString();
+  document.getElementById("s-bytes").textContent      = fmtBytes(snap.total_bytes);
+  document.getElementById("s-throughput").textContent = fmtBps(snap.throughput_bps);
+  document.getElementById("s-blocked").textContent    = snap.blocked_total.toLocaleString();
+  document.getElementById("s-scans").textContent      = snap.scan_alerts;
+  document.getElementById("s-floods").textContent     = snap.syn_flood_alerts;
+  document.getElementById("s-tunnels").textContent    = snap.dns_tunnel_alerts;
+}
+
+// ── Throughput chart ─────────────────────────────────────────────────────────
 function updateThroughput(bps) {
-  throughputData.values.push(bps);
-  if (throughputData.values.length > THROUGHPUT_MAX_POINTS)
-    throughputData.values.shift();
-  throughputChart.data.datasets[0].data = [...throughputData.values];
+  tpValues.push(bps);
+  if (tpValues.length > N) tpValues.shift();
+  throughputChart.data.datasets[0].data = [...tpValues];
   throughputChart.update("none");
 }
 
-// ── Update app breakdown donut ───────────────────────────────────────────────
+// ── App breakdown donut ──────────────────────────────────────────────────────
 function updateAppChart(breakdown) {
   const entries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]).slice(0, 10);
-  appChart.data.labels = entries.map(e => e[0]);
-  appChart.data.datasets[0].data = entries.map(e => e[1]);
+  appChart.data.labels                    = entries.map(e => e[0]);
+  appChart.data.datasets[0].data          = entries.map(e => e[1]);
+  appChart.data.datasets[0].backgroundColor = APP_COLORS.slice(0, entries.length);
   appChart.update("none");
 }
 
-// ── Update blocked-by-reason bar ─────────────────────────────────────────────
+// ── Blocked bar ──────────────────────────────────────────────────────────────
 function updateBlockedChart(reasons) {
   const entries = Object.entries(reasons);
-  blockedChart.data.labels = entries.map(e => e[0]);
-  blockedChart.data.datasets[0].data = entries.map(e => e[1]);
+  blockedChart.data.labels            = entries.map(e => e[0]);
+  blockedChart.data.datasets[0].data  = entries.map(e => e[1]);
   blockedChart.update("none");
 }
 
-// ── Top talkers panel ────────────────────────────────────────────────────────
+// ── Top talkers (htop-style bars) ────────────────────────────────────────────
 function updateTopTalkers(breakdown) {
   const list = document.getElementById("talkers-list");
   const entries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]).slice(0, 8);
-  if (entries.length === 0) return;
   const total = entries.reduce((s, e) => s + e[1], 0) || 1;
+
+  document.getElementById("talker-count").textContent = `${entries.length} apps`;
+
+  if (!entries.length) return;
   list.innerHTML = entries.map(([app, count]) => {
     const pct = ((count / total) * 100).toFixed(1);
-    return `<li><span>${app}</span><span style="color:#60a5fa">${count.toLocaleString()} pkts (${pct}%)</span></li>`;
+    return `<li>
+      <span class="talker-name">${app}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+      <span class="talker-pct">${pct}%</span>
+    </li>`;
   }).join("");
 }
 
-// ── Security alert feed ───────────────────────────────────────────────────────
-const MAX_ALERTS_DISPLAYED = 30;
+// ── Alert feed ───────────────────────────────────────────────────────────────
 const alertFeed = document.getElementById("alert-feed");
-let alertCount = 0;
+let alertTotal = 0;
 
 function appendAlert(event) {
   if (event.event !== "anomaly") return;
+  alertTotal++;
+  document.getElementById("alert-count").textContent = `${alertTotal} events`;
 
-  alertCount++;
-  // Remove placeholder
-  if (alertCount === 1) alertFeed.innerHTML = "";
-  // Trim old entries
-  while (alertFeed.children.length >= MAX_ALERTS_DISPLAYED)
-    alertFeed.removeChild(alertFeed.lastChild);
+  if (alertTotal === 1) alertFeed.innerHTML = "";
 
-  const typeClass = ["PORT_SCAN", "SYN_FLOOD", "DNS_TUNNEL"].includes(event.type)
-    ? event.type : "OTHER";
+  // trim
+  while (alertFeed.children.length >= 40) alertFeed.removeChild(alertFeed.lastChild);
 
-  const ts = new Date(event.ts * 1000).toLocaleTimeString();
-  const detail = event.detail ? JSON.stringify(event.detail) : "";
+  const typeClass = ["PORT_SCAN","SYN_FLOOD","DNS_TUNNEL"].includes(event.type) ? event.type : "OTHER";
+  const detail = event.detail ? Object.entries(event.detail).map(([k,v])=>`${k}=${v}`).join(" ") : "";
   const li = document.createElement("li");
   li.innerHTML = `
+    <span class="ts">${nowTs()}</span>
     <span class="badge ${typeClass}">${event.type}</span>
-    <span style="color:#94a3b8">${ts}</span>
-    <span style="color:#cbd5e1; word-break:break-all">${detail}</span>`;
+    <span class="alert-detail">${detail}</span>`;
   alertFeed.prepend(li);
 }
 
-// ── Master update function ────────────────────────────────────────────────────
+// ── Master update ────────────────────────────────────────────────────────────
 function handleSnapshot(snap) {
   updateStats(snap);
   updateThroughput(snap.throughput_bps);
@@ -189,7 +233,29 @@ function handleSnapshot(snap) {
   updateTopTalkers(snap.app_breakdown);
 }
 
-// ── WebSocket connection ──────────────────────────────────────────────────────
+// ── Clear alerts ─────────────────────────────────────────────────────────────
+function clearAlerts() {
+  alertFeed.innerHTML = `<li><span class="ts">${nowTs()}</span><span class="alert-detail">Log cleared.</span></li>`;
+  alertTotal = 0;
+  document.getElementById("alert-count").textContent = "0 events";
+  showToast("LOG CLEARED");
+}
+
+// ── Toast ────────────────────────────────────────────────────────────────────
+function showToast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = `> ${msg}`;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2500);
+}
+
+// ── Report export ────────────────────────────────────────────────────────────
+function exportReport(format) {
+  window.open(`/api/report?format=${format}`, "_blank");
+  showToast(`GENERATING ${format.toUpperCase()} REPORT…`);
+}
+
+// ── WebSocket ────────────────────────────────────────────────────────────────
 const statusDot  = document.getElementById("status-dot");
 const statusText = document.getElementById("status-text");
 let ws;
@@ -200,46 +266,37 @@ function connect() {
 
   ws.onopen = () => {
     statusDot.classList.add("live");
-    statusText.textContent = "Live";
+    statusText.textContent = "LIVE";
+    showToast("ENGINE CONNECTED — MONITORING ACTIVE");
   };
 
   ws.onclose = () => {
     statusDot.classList.remove("live");
-    statusText.textContent = "Reconnecting…";
-    setTimeout(connect, 3000);   // auto-reconnect
+    statusText.textContent = "RECONNECTING";
+    setTimeout(connect, 3000);
   };
 
   ws.onerror = () => ws.close();
 
-  ws.onmessage = (msg) => {
+  ws.onmessage = ({ data }) => {
     try {
-      const data = JSON.parse(msg.data);
-      // Could be a stats snapshot OR an anomaly event
-      if (data.event === "anomaly") {
-        appendAlert(data);
-      } else {
-        handleSnapshot(data);
-        // Also poll /api/events for alert feed (covers missed events)
-      }
-    } catch (_) {}
+      const msg = JSON.parse(data);
+      if (msg.event === "anomaly") appendAlert(msg);
+      else handleSnapshot(msg);
+    } catch(_) {}
   };
 }
 
-// ── Periodic alert feed refresh (belt-and-suspenders) ────────────────────────
-async function refreshAlerts() {
+// ── Periodic event poll ──────────────────────────────────────────────────────
+async function pollEvents() {
   try {
-    const res  = await fetch("/api/events");
-    const data = await res.json();
-    data.slice(0, 5).forEach(appendAlert);
-  } catch (_) {}
+    const res = await fetch("/api/events");
+    const events = await res.json();
+    events.slice(0, 3).forEach(appendAlert);
+  } catch(_) {}
 }
 
-// ── Report export ────────────────────────────────────────────────────────────
-function exportReport(format) {
-  window.open(`/api/report?format=${format}`, "_blank");
-}
-
-// ── Bootstrap ────────────────────────────────────────────────────────────────
+// ── Boot ─────────────────────────────────────────────────────────────────────
 initCharts();
 connect();
-setInterval(refreshAlerts, 10_000);
+setInterval(pollEvents, 12000);
