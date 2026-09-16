@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import html
 import json
 import random
 import time
 from contextlib import asynccontextmanager
 from typing import Any
+from xml.sax.saxutils import escape as xml_escape
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
@@ -27,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 
 # Port the C++ engine will stream JSON events to (§4 integration contract).
 ENGINE_HOST = "127.0.0.1"
-ENGINE_PORT = 9000          # C++ side must connect here (or vice-versa)
+ENGINE_PORT = 9000          # Dashboard listens here to accept engine pushes
 
 # How often (seconds) to push stats to WebSocket clients.
 WS_PUSH_INTERVAL = 1.0
@@ -35,6 +37,9 @@ WS_PUSH_INTERVAL = 1.0
 # Ring-buffer sizes
 MAX_CONNECTIONS = 200
 MAX_EVENTS = 100
+
+# Default packet size (bytes) fallback when contract-compliant app_classified events omit wire length
+DEFAULT_PACKET_BYTES = 512
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +55,7 @@ class DashboardState:
         self.throughput_bps: float = 0.0
         self._last_bytes: int = 0
         self._last_ts: float = time.time()
+        self._event_counter: int = 0
 
         # app_name -> packet count
         self.app_breakdown: dict[str, int] = {}
@@ -68,21 +74,56 @@ class DashboardState:
         self.events: collections.deque[dict] = collections.deque(maxlen=MAX_EVENTS)
 
     # ------------------------------------------------------------------
-    # Ingest an event from the C++ engine (§4.2 schema)
+    # Ingest an event from the C++ engine (§4.2 schema) or mock generator
     # ------------------------------------------------------------------
 
-    def ingest(self, event: dict) -> None:
+    def ingest(self, event: Any) -> None:
+        # Require dictionary before processing so malformed JSON does not raise AttributeError
+        if not isinstance(event, dict):
+            return
+
         kind = event.get("event")
+
+        # Consume engine's aggregate byte statistics if provided (§4.3)
+        if kind == "stats" or ("total_packets" in event and "total_bytes" in event):
+            if "total_packets" in event:
+                self.total_packets = int(event["total_packets"])
+            if "total_bytes" in event:
+                self.total_bytes = int(event["total_bytes"])
+            if "throughput_bps" in event:
+                self.throughput_bps = float(event["throughput_bps"])
+            if "app_breakdown" in event and isinstance(event["app_breakdown"], dict):
+                self.app_breakdown.update(event["app_breakdown"])
+            if "blocked_total" in event:
+                self.blocked_total = int(event["blocked_total"])
+            if "blocked_reasons" in event and isinstance(event["blocked_reasons"], dict):
+                self.blocked_reasons.update(event["blocked_reasons"])
+            if "scan_alerts" in event:
+                self.scan_alerts = int(event["scan_alerts"])
+            if "syn_flood_alerts" in event:
+                self.syn_flood_alerts = int(event["syn_flood_alerts"])
+            if "dns_tunnel_alerts" in event:
+                self.dns_tunnel_alerts = int(event["dns_tunnel_alerts"])
+            return
 
         if kind == "app_classified":
             self.total_packets += 1
-            self.total_bytes += event.get("bytes", 0)
-            app = event.get("app", "Unknown")
+            pkt_bytes = (
+                event.get("bytes")
+                or event.get("length")
+                or event.get("packet_len")
+                or event.get("size")
+            )
+            if pkt_bytes is None:
+                pkt_bytes = DEFAULT_PACKET_BYTES
+            self.total_bytes += int(pkt_bytes)
+
+            app = str(event.get("app") or "Unknown")
             self.app_breakdown[app] = self.app_breakdown.get(app, 0) + 1
 
             if event.get("blocked"):
                 self.blocked_total += 1
-                reason = event.get("reason") or "OTHER"
+                reason = str(event.get("reason") or "OTHER")
                 self.blocked_reasons[reason] = (
                     self.blocked_reasons.get(reason, 0) + 1
                 )
@@ -90,7 +131,11 @@ class DashboardState:
             self.connections.appendleft(event)
 
         elif kind == "anomaly":
-            atype = event.get("type", "")
+            self._event_counter += 1
+            if "id" not in event:
+                event["id"] = self._event_counter
+
+            atype = str(event.get("type", ""))
             self.events.appendleft(event)
             if atype == "PORT_SCAN":
                 self.scan_alerts += 1
@@ -99,7 +144,10 @@ class DashboardState:
             elif atype == "DNS_TUNNEL":
                 self.dns_tunnel_alerts += 1
 
-        # Recalculate throughput
+    def stats_snapshot(self) -> dict:
+        """Calculates throughput against current wall-clock time so rate drops to 0
+        when traffic ceases, and returns the aggregated metrics.
+        """
         now = time.time()
         elapsed = now - self._last_ts
         if elapsed >= 1.0:
@@ -107,9 +155,8 @@ class DashboardState:
             self._last_bytes = self.total_bytes
             self._last_ts = now
 
-    def stats_snapshot(self) -> dict:
         return {
-            "ts": int(time.time()),
+            "ts": int(now),
             "total_packets": self.total_packets,
             "total_bytes": self.total_bytes,
             "throughput_bps": round(self.throughput_bps, 2),
@@ -126,7 +173,7 @@ state = DashboardState()
 
 
 # ---------------------------------------------------------------------------
-# Mock data generator (used when C++ engine is NOT running)
+# Mock data generator (used only when C++ engine is NOT connected)
 # ---------------------------------------------------------------------------
 
 _APPS = ["Google", "YouTube", "DNS", "Netflix", "Facebook", "Unknown",
@@ -172,57 +219,78 @@ def _maybe_anomaly_event() -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# IPC bridge (tries to connect to C++ engine; falls back to mock)
+# IPC bridge (Dashboard accepts connections from C++ engine; falls back to mock)
 # ---------------------------------------------------------------------------
 
-async def ipc_bridge() -> None:
-    """
-    Attempts to read JSON events from the C++ engine socket.
-    If the engine isn't running, generates mock data so the dashboard
-    is always demoable (see §7.4 — standalone demo requirement).
-    """
-    use_mock = False
+_active_engine_conns: set[asyncio.StreamWriter] = set()
 
+
+async def handle_engine_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Handles an incoming connection from the C++ DPI engine."""
+    peer = writer.get_extra_info("peername")
+    print(f"[ipc] C++ engine connected from {peer}")
+    _active_engine_conns.add(writer)
+    buf = b""
     try:
-        reader, _ = await asyncio.open_connection(ENGINE_HOST, ENGINE_PORT)
-        print(f"[ipc] Connected to C++ engine at {ENGINE_HOST}:{ENGINE_PORT}")
-    except OSError:
-        print(
-            f"[ipc] C++ engine not found at {ENGINE_HOST}:{ENGINE_PORT} — "
-            "using mock data for demo"
-        )
-        use_mock = True
-
-    if use_mock:
         while True:
-            # Simulate ~10 packets per second
+            chunk = await reader.read(4096)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                line = line.strip()
+                if line:
+                    try:
+                        event = json.loads(line)
+                        if isinstance(event, dict):
+                            state.ingest(event)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        pass
+    except (OSError, asyncio.IncompleteReadError):
+        pass
+    finally:
+        _active_engine_conns.discard(writer)
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
+        print(f"[ipc] C++ engine disconnected from {peer}.")
+
+
+async def ipc_bridge() -> None:
+    """Dashboard-side TCP listener to accept engine connections (§4 topology).
+    If port 9000 is occupied by an engine server, retries connecting as a client with backoff.
+    """
+    try:
+        server = await asyncio.start_server(
+            handle_engine_connection, ENGINE_HOST, ENGINE_PORT
+        )
+        print(f"[ipc] Dashboard listening for C++ engine on {ENGINE_HOST}:{ENGINE_PORT}")
+        async with server:
+            await server.serve_forever()
+    except OSError:
+        # Fallback if an engine is already running as a server on ENGINE_PORT
+        print(f"[ipc] Port {ENGINE_PORT} in use; attempting outbound client connection...")
+        while True:
+            try:
+                reader, writer = await asyncio.open_connection(ENGINE_HOST, ENGINE_PORT)
+                await handle_engine_connection(reader, writer)
+            except OSError:
+                await asyncio.sleep(2.0)
+
+
+async def mock_feeder() -> None:
+    """Generates mock data only while disconnected from live engines (Violation 4)."""
+    while True:
+        await asyncio.sleep(1.0)
+        if not _active_engine_conns:
             for _ in range(10):
                 state.ingest(_mock_event())
             anomaly = _maybe_anomaly_event()
             if anomaly:
                 state.ingest(anomaly)
-            await asyncio.sleep(1.0)
-    else:
-        buf = b""
-        while True:
-            try:
-                chunk = await reader.read(4096)
-                if not chunk:
-                    break
-                buf += chunk
-                # Events are newline-delimited JSON
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    line = line.strip()
-                    if line:
-                        try:
-                            event = json.loads(line)
-                            state.ingest(event)
-                        except json.JSONDecodeError:
-                            pass
-            except (OSError, asyncio.IncompleteReadError):
-                break
-        print("[ipc] Connection to C++ engine closed.")
 
 
 # ---------------------------------------------------------------------------
@@ -231,24 +299,23 @@ async def ipc_bridge() -> None:
 
 class ConnectionManager:
     def __init__(self) -> None:
-        self._clients: list[WebSocket] = []
+        self._clients: set[WebSocket] = set()
 
     async def connect(self, ws: WebSocket) -> None:
         await ws.accept()
-        self._clients.append(ws)
+        self._clients.add(ws)
 
     def disconnect(self, ws: WebSocket) -> None:
-        self._clients.remove(ws)
+        # Idempotent removal prevents ValueError on concurrent disconnect
+        self._clients.discard(ws)
 
     async def broadcast(self, data: dict) -> None:
-        dead: list[WebSocket] = []
-        for ws in self._clients:
+        # Iterate over a snapshot list to allow safe concurrent removal
+        for ws in list(self._clients):
             try:
                 await ws.send_json(data)
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self._clients.remove(ws)
+                self._clients.discard(ws)
 
 
 manager = ConnectionManager()
@@ -270,9 +337,11 @@ async def ws_broadcaster() -> None:
 async def lifespan(app: FastAPI):
     # Start background tasks
     bridge_task = asyncio.create_task(ipc_bridge())
+    mock_task = asyncio.create_task(mock_feeder())
     broadcast_task = asyncio.create_task(ws_broadcaster())
     yield
     bridge_task.cancel()
+    mock_task.cancel()
     broadcast_task.cancel()
 
 
@@ -334,13 +403,13 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 def _render_html_report() -> str:
     snap = state.stats_snapshot()
     rows = "".join(
-        f"<tr><td>{app}</td><td>{count}</td></tr>"
+        f"<tr><td>{html.escape(str(app))}</td><td>{count}</td></tr>"
         for app, count in sorted(
             snap["app_breakdown"].items(), key=lambda x: -x[1]
         )
     )
     blocked_rows = "".join(
-        f"<tr><td>{reason}</td><td>{count}</td></tr>"
+        f"<tr><td>{html.escape(str(reason))}</td><td>{count}</td></tr>"
         for reason, count in snap["blocked_reasons"].items()
     )
     return f"""<!DOCTYPE html>
@@ -398,7 +467,7 @@ async def export_report(format: str = "html"):
     ?format=html  → HTML file download
     ?format=pdf   → PDF file download (requires reportlab)
     """
-    html = _render_html_report()
+    html_content = _render_html_report()
 
     if format == "pdf":
         try:
@@ -439,14 +508,16 @@ async def export_report(format: str = "html"):
             for app_name, count in sorted(
                 snap["app_breakdown"].items(), key=lambda x: -x[1]
             ):
+                safe_app = xml_escape(str(app_name))
                 story.append(
-                    Paragraph(f"{app_name}: {count} packets", styles["Normal"])
+                    Paragraph(f"{safe_app}: {count} packets", styles["Normal"])
                 )
 
             story.append(Spacer(1, 12))
             story.append(Paragraph("Blocked Traffic by Reason", styles["Heading2"]))
             for reason, count in snap["blocked_reasons"].items():
-                story.append(Paragraph(f"{reason}: {count}", styles["Normal"]))
+                safe_reason = xml_escape(str(reason))
+                story.append(Paragraph(f"{safe_reason}: {count}", styles["Normal"]))
 
             doc.build(story)
             pdf_bytes = buf.getvalue()
@@ -467,7 +538,7 @@ async def export_report(format: str = "html"):
 
     # Default: HTML
     return Response(
-        content=html,
+        content=html_content,
         media_type="text/html",
         headers={"Content-Disposition": "attachment; filename=dpi_report.html"},
     )

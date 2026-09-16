@@ -190,22 +190,57 @@ function updateTopTalkers(breakdown) {
   document.getElementById("talker-count").textContent = `${entries.length} apps`;
 
   if (!entries.length) return;
-  list.innerHTML = entries.map(([app, count]) => {
+  list.innerHTML = "";
+  for (const [app, count] of entries) {
     const pct = ((count / total) * 100).toFixed(1);
-    return `<li>
-      <span class="talker-name">${app}</span>
-      <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
-      <span class="talker-pct">${pct}%</span>
-    </li>`;
-  }).join("");
+    const li = document.createElement("li");
+
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "talker-name";
+    nameSpan.textContent = String(app);
+
+    const trackDiv = document.createElement("div");
+    trackDiv.className = "bar-track";
+    const fillDiv = document.createElement("div");
+    fillDiv.className = "bar-fill";
+    fillDiv.style.width = `${pct}%`;
+    trackDiv.appendChild(fillDiv);
+
+    const pctSpan = document.createElement("span");
+    pctSpan.className = "talker-pct";
+    pctSpan.textContent = `${pct}%`;
+
+    li.appendChild(nameSpan);
+    li.appendChild(trackDiv);
+    li.appendChild(pctSpan);
+    list.appendChild(li);
+  }
 }
 
 // ── Alert feed ───────────────────────────────────────────────────────────────
 const alertFeed = document.getElementById("alert-feed");
 let alertTotal = 0;
+const seenEventKeys = new Set();
+
+function getEventKey(event) {
+  if (!event) return "";
+  if (event.id != null) return `id_${event.id}`;
+  return `${event.ts || ""}_${event.type || ""}_${JSON.stringify(event.detail || {})}`;
+}
 
 function appendAlert(event) {
-  if (event.event !== "anomaly") return;
+  if (!event || event.event !== "anomaly") return;
+
+  const eventKey = getEventKey(event);
+  if (eventKey && seenEventKeys.has(eventKey)) return;
+  if (eventKey) {
+    seenEventKeys.add(eventKey);
+    if (seenEventKeys.size > 1000) {
+      const iter = seenEventKeys.values();
+      for (let i = 0; i < 200; i++) seenEventKeys.delete(iter.next().value);
+    }
+  }
+
   alertTotal++;
   document.getElementById("alert-count").textContent = `${alertTotal} events`;
 
@@ -214,13 +249,29 @@ function appendAlert(event) {
   // trim
   while (alertFeed.children.length >= 40) alertFeed.removeChild(alertFeed.lastChild);
 
-  const typeClass = ["PORT_SCAN","SYN_FLOOD","DNS_TUNNEL"].includes(event.type) ? event.type : "OTHER";
-  const detail = event.detail ? Object.entries(event.detail).map(([k,v])=>`${k}=${v}`).join(" ") : "";
+  const allowedTypes = ["PORT_SCAN", "SYN_FLOOD", "DNS_TUNNEL"];
+  const typeClass = allowedTypes.includes(event.type) ? event.type : "OTHER";
+  const detail = event.detail
+    ? Object.entries(event.detail).map(([k, v]) => `${k}=${v}`).join(" ")
+    : "";
+
   const li = document.createElement("li");
-  li.innerHTML = `
-    <span class="ts">${nowTs()}</span>
-    <span class="badge ${typeClass}">${event.type}</span>
-    <span class="alert-detail">${detail}</span>`;
+
+  const tsSpan = document.createElement("span");
+  tsSpan.className = "ts";
+  tsSpan.textContent = nowTs();
+
+  const badgeSpan = document.createElement("span");
+  badgeSpan.className = `badge ${typeClass}`;
+  badgeSpan.textContent = String(event.type || "UNKNOWN");
+
+  const detailSpan = document.createElement("span");
+  detailSpan.className = "alert-detail";
+  detailSpan.textContent = detail;
+
+  li.appendChild(tsSpan);
+  li.appendChild(badgeSpan);
+  li.appendChild(detailSpan);
   alertFeed.prepend(li);
 }
 
@@ -235,7 +286,18 @@ function handleSnapshot(snap) {
 
 // ── Clear alerts ─────────────────────────────────────────────────────────────
 function clearAlerts() {
-  alertFeed.innerHTML = `<li><span class="ts">${nowTs()}</span><span class="alert-detail">Log cleared.</span></li>`;
+  alertFeed.innerHTML = "";
+  const li = document.createElement("li");
+  const tsSpan = document.createElement("span");
+  tsSpan.className = "ts";
+  tsSpan.textContent = nowTs();
+  const detailSpan = document.createElement("span");
+  detailSpan.className = "alert-detail";
+  detailSpan.textContent = "Log cleared.";
+  li.appendChild(tsSpan);
+  li.appendChild(detailSpan);
+  alertFeed.appendChild(li);
+
   alertTotal = 0;
   document.getElementById("alert-count").textContent = "0 events";
   showToast("LOG CLEARED");
@@ -292,7 +354,11 @@ async function pollEvents() {
   try {
     const res = await fetch("/api/events");
     const events = await res.json();
-    events.slice(0, 3).forEach(appendAlert);
+    if (Array.isArray(events)) {
+      for (const ev of events.slice().reverse()) {
+        appendAlert(ev);
+      }
+    }
   } catch(_) {}
 }
 
