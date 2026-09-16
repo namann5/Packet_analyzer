@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Packet Analyzer — Live Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    /* ── Reset & Base ───────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+
+    /* ── Header ────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 28px;
+      background: #1e293b;
+      border-bottom: 1px solid #334155;
+    }
+    header h1 { font-size: 1.25rem; color: #60a5fa; letter-spacing: 0.03em; }
+    #status-badge {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 0.8rem; color: #94a3b8;
+    }
+    #status-dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: #ef4444;
+      transition: background 0.3s;
+    }
+    #status-dot.live { background: #22c55e; }
+
+    /* ── Stat cards ─────────────────────────────────────── */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 14px;
+      padding: 20px 28px 0;
+    }
+    .stat-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .stat-card .label { font-size: 0.72rem; color: #64748b; text-transform: uppercase; letter-spacing: .06em; }
+    .stat-card .value { font-size: 1.7rem; font-weight: 700; margin-top: 4px; color: #f1f5f9; }
+    .stat-card.danger .value  { color: #f87171; }
+    .stat-card.warn  .value  { color: #fbbf24; }
+
+    /* ── Chart grid ─────────────────────────────────────── */
+    .chart-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      padding: 20px 28px;
+    }
+    @media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } }
+
+    .chart-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 18px;
+    }
+    .chart-card h2 { font-size: 0.88rem; color: #94a3b8; margin-bottom: 12px; }
+    .chart-card canvas { max-height: 220px; }
+
+    /* ── Bottom panels ──────────────────────────────────── */
+    .bottom-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      padding: 0 28px 28px;
+    }
+    @media (max-width: 900px) { .bottom-grid { grid-template-columns: 1fr; } }
+
+    .panel {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 16px;
+      overflow: hidden;
+    }
+    .panel h2 { font-size: 0.88rem; color: #94a3b8; margin-bottom: 10px; }
+
+    /* Alert feed */
+    #alert-feed { list-style: none; max-height: 200px; overflow-y: auto; }
+    #alert-feed li {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 0; border-bottom: 1px solid #1e3a5f;
+      font-size: 0.8rem;
+    }
+    #alert-feed li:last-child { border-bottom: none; }
+    .badge {
+      display: inline-block; padding: 2px 7px;
+      border-radius: 4px; font-size: 0.7rem; font-weight: 600;
+    }
+    .badge.PORT_SCAN  { background: #7c3aed; color: #fff; }
+    .badge.SYN_FLOOD  { background: #dc2626; color: #fff; }
+    .badge.DNS_TUNNEL { background: #d97706; color: #fff; }
+    .badge.OTHER      { background: #475569; color: #fff; }
+
+    /* Top talkers */
+    #talkers-list { list-style: none; max-height: 200px; overflow-y: auto; }
+    #talkers-list li {
+      display: flex; justify-content: space-between;
+      padding: 6px 0; border-bottom: 1px solid #1e3a5f;
+      font-size: 0.82rem;
+    }
+    #talkers-list li:last-child { border-bottom: none; }
+
+    /* Report buttons */
+    .report-bar {
+      display: flex; gap: 10px;
+      padding: 0 28px 28px;
+    }
+    .btn {
+      padding: 9px 20px; border: none; border-radius: 7px;
+      cursor: pointer; font-size: 0.85rem; font-weight: 600;
+      transition: opacity 0.2s;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn-html { background: #2563eb; color: #fff; }
+    .btn-pdf  { background: #16a34a; color: #fff; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>📡 Packet Analyzer — Live DPI Dashboard</h1>
+  <div id="status-badge">
+    <div id="status-dot"></div>
+    <span id="status-text">Connecting…</span>
+  </div>
+</header>
+
+<!-- Stat Cards -->
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="label">Total Packets</div>
+    <div class="value" id="s-packets">—</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Total Bytes</div>
+    <div class="value" id="s-bytes">—</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Throughput</div>
+    <div class="value" id="s-throughput">—</div>
+  </div>
+  <div class="stat-card danger">
+    <div class="label">Blocked</div>
+    <div class="value" id="s-blocked">—</div>
+  </div>
+  <div class="stat-card warn">
+    <div class="label">Port Scans</div>
+    <div class="value" id="s-scans">—</div>
+  </div>
+  <div class="stat-card warn">
+    <div class="label">SYN Floods</div>
+    <div class="value" id="s-floods">—</div>
+  </div>
+  <div class="stat-card warn">
+    <div class="label">DNS Tunnels</div>
+    <div class="value" id="s-tunnels">—</div>
+  </div>
+</div>
+
+<!-- Charts -->
+<div class="chart-grid">
+  <div class="chart-card">
+    <h2>📈 Live Throughput (bps)</h2>
+    <canvas id="throughput-chart"></canvas>
+  </div>
+  <div class="chart-card">
+    <h2>🍩 Application Breakdown</h2>
+    <canvas id="app-chart"></canvas>
+  </div>
+  <div class="chart-card">
+    <h2>🚫 Blocked by Reason</h2>
+    <canvas id="blocked-chart"></canvas>
+  </div>
+</div>
+
+<!-- Alert feed + Top talkers -->
+<div class="bottom-grid">
+  <div class="panel">
+    <h2>🚨 Security Alerts</h2>
+    <ul id="alert-feed"><li style="color:#64748b">Waiting for alerts…</li></ul>
+  </div>
+  <div class="panel">
+    <h2>🏆 Top Applications (by packets)</h2>
+    <ul id="talkers-list"><li style="color:#64748b"><span>Waiting for data…</span></li></ul>
+  </div>
+</div>
+
+<!-- Report export -->
+<div class="report-bar">
+  <button class="btn btn-html" onclick="exportReport('html')">⬇ Export HTML Report</button>
+  <button class="btn btn-pdf"  onclick="exportReport('pdf')">⬇ Export PDF Report</button>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
