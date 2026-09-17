@@ -12,12 +12,16 @@ namespace DPI {
 
 FastPathProcessor::FastPathProcessor(int fp_id,
                                      RuleManager* rule_manager,
-                                     PacketOutputCallback output_callback)
+                                     PacketOutputCallback output_callback,
+                                     IPCEmitter* ipc_emitter,
+                                     DPIStats* engine_stats)
     : fp_id_(fp_id),
       input_queue_(10000),
       conn_tracker_(fp_id),
       rule_manager_(rule_manager),
-      output_callback_(std::move(output_callback)) {
+      output_callback_(std::move(output_callback)),
+      ipc_emitter_(ipc_emitter),
+      engine_stats_(engine_stats) {
 }
 
 FastPathProcessor::~FastPathProcessor() {
@@ -130,6 +134,8 @@ void FastPathProcessor::inspectPayload(PacketJob& job, Connection* conn) {
         auto domain = DNSExtractor::extractQuery(payload, job.payload_length);
         if (domain) {
             conn_tracker_.classifyConnection(conn, AppType::DNS, *domain);
+            if (engine_stats_) engine_stats_->app_counts[static_cast<size_t>(AppType::DNS)]++;
+            if (ipc_emitter_) ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(AppType::DNS), false, "", job.data.size());
             return;
         }
     }
@@ -137,8 +143,12 @@ void FastPathProcessor::inspectPayload(PacketJob& job, Connection* conn) {
     // Basic port-based classification as fallback
     if (job.tuple.dst_port == 80) {
         conn_tracker_.classifyConnection(conn, AppType::HTTP, "");
+        if (engine_stats_) engine_stats_->app_counts[static_cast<size_t>(AppType::HTTP)]++;
+        if (ipc_emitter_) ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(AppType::HTTP), false, "", job.data.size());
     } else if (job.tuple.dst_port == 443) {
         conn_tracker_.classifyConnection(conn, AppType::HTTPS, "");
+        if (engine_stats_) engine_stats_->app_counts[static_cast<size_t>(AppType::HTTPS)]++;
+        if (ipc_emitter_) ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(AppType::HTTPS), false, "", job.data.size());
     }
 }
 
@@ -160,6 +170,8 @@ bool FastPathProcessor::tryExtractSNI(const PacketJob& job, Connection* conn) {
         // Map SNI to app type
         AppType app = sniToAppType(*sni);
         conn_tracker_.classifyConnection(conn, app, *sni);
+        if (engine_stats_) engine_stats_->app_counts[static_cast<size_t>(app)]++;
+        if (ipc_emitter_) ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(app), false, "", job.data.size());
         
         if (app != AppType::UNKNOWN && app != AppType::HTTPS) {
             classification_hits_++;
@@ -186,6 +198,8 @@ bool FastPathProcessor::tryExtractHTTPHost(const PacketJob& job, Connection* con
     if (host) {
         AppType app = sniToAppType(*host);
         conn_tracker_.classifyConnection(conn, app, *host);
+        if (engine_stats_) engine_stats_->app_counts[static_cast<size_t>(app)]++;
+        if (ipc_emitter_) ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(app), false, "", job.data.size());
         
         if (app != AppType::UNKNOWN && app != AppType::HTTP) {
             classification_hits_++;
@@ -217,20 +231,33 @@ PacketAction FastPathProcessor::checkRules(const PacketJob& job, Connection* con
         // Log the block
         std::ostringstream ss;
         ss << "[FP" << fp_id_ << "] BLOCKED packet: ";
+        std::string reason_str = "OTHER";
         
         switch (block_reason->type) {
             case RuleManager::BlockReason::BLOCK_IP:
                 ss << "IP " << block_reason->detail;
+                reason_str = "IP";
+                if (engine_stats_) engine_stats_->blocked_by_ip++;
                 break;
             case RuleManager::BlockReason::BLOCK_APP:
                 ss << "App " << block_reason->detail;
+                reason_str = "APP";
+                if (engine_stats_) engine_stats_->blocked_by_app++;
                 break;
             case RuleManager::BlockReason::BLOCK_DOMAIN:
                 ss << "Domain " << block_reason->detail;
+                reason_str = "DOMAIN";
+                if (engine_stats_) engine_stats_->blocked_by_domain++;
                 break;
             case RuleManager::BlockReason::BLOCK_PORT:
                 ss << "Port " << block_reason->detail;
+                reason_str = "PORT";
+                if (engine_stats_) engine_stats_->blocked_by_port++;
                 break;
+        }
+        if (engine_stats_) engine_stats_->blocked_total++;
+        if (ipc_emitter_) {
+            ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(conn->app_type), true, reason_str, job.data.size());
         }
         
         std::cout << ss.str() << std::endl;
@@ -294,11 +321,13 @@ FastPathProcessor::FPStats FastPathProcessor::getStats() const {
 
 FPManager::FPManager(int num_fps,
                      RuleManager* rule_manager,
-                     PacketOutputCallback output_callback) {
+                     PacketOutputCallback output_callback,
+                     IPCEmitter* ipc_emitter,
+                     DPIStats* engine_stats) {
     
     // Create FP processors (each has its own input queue)
     for (int i = 0; i < num_fps; i++) {
-        auto fp = std::make_unique<FastPathProcessor>(i, rule_manager, output_callback);
+        auto fp = std::make_unique<FastPathProcessor>(i, rule_manager, output_callback, ipc_emitter, engine_stats);
         fps_.push_back(std::move(fp));
     }
     
