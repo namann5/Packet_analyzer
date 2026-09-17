@@ -3,6 +3,7 @@
 #include <sstream>
 #include <iomanip>
 #include <chrono>
+#include <cstring>
 
 #ifdef _WIN32
   #include <winsock2.h>

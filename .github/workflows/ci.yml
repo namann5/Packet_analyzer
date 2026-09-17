@@ -110,4 +110,4 @@ jobs:
 
       - name: Run dashboard pytest suite
         run: |
-          pytest dashboard/test_dashboard.py
+          python -m pytest dashboard/test_dashboard.py
