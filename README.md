@@ -984,7 +984,7 @@ Then open `http://localhost:8000` in your web browser.
 build/dpi_engine input.pcap output.pcap --export-stats 9000
 
 # Stream stats during live network capture:
-build/dpi_engine -i eth0 --rules rules.json --export-stats 9000
+build/dpi_engine -i eth0 -o live.pcap --rules rules.json --export-stats 9000
 ```
 
 4. **Run Dashboard test suite:**
