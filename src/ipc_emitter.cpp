@@ -170,10 +170,7 @@ void IPCEmitter::disconnect() {
 
 bool IPCEmitter::sendRawJson(const std::string& json_str) {
     if (!connected_) {
-        // Attempt quick connect
-        if (!connect(host_, port_)) {
-            return false;
-        }
+        return false;
     }
 
     std::string line = json_str + "\n";

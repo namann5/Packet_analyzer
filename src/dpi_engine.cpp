@@ -151,7 +151,12 @@ void DPIEngine::ipcThreadFunc() {
         last_time = now;
 
         if (ipc_emitter_) {
-            ipc_emitter_->emitStats(stats_, throughput_bps);
+            if (!ipc_emitter_->isConnected()) {
+                ipc_emitter_->connect(config_.ipc_host, config_.ipc_port);
+            }
+            if (ipc_emitter_->isConnected()) {
+                ipc_emitter_->emitStats(stats_, throughput_bps);
+            }
         }
     }
 }
