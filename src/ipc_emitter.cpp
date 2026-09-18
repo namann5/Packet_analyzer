@@ -18,6 +18,10 @@
   #include <unistd.h>
 #endif
 
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 namespace DPI {
 
 #ifdef _WIN32
@@ -192,7 +196,7 @@ bool IPCEmitter::sendRawJson(const std::string& json_str) {
             >(sock_),
             line.c_str() + total_sent,
             static_cast<int>(line.size() - total_sent),
-            0
+            MSG_NOSIGNAL
         );
 
         if (bytes_sent <= 0) {
