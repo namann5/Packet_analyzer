@@ -30,7 +30,7 @@ engine_sources = files(
 
 extra_deps = []
 if host_machine.system() == 'windows'
-  extra_deps += meson.get_compiler('cpp').find_library('ws2_32', required: false)
+  extra_deps += meson.get_compiler('cpp').find_library('ws2_32', required: true)
 endif
 
 # ---------------------------------------------------------------------------
