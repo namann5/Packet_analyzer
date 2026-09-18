@@ -103,13 +103,24 @@ PacketAction FastPathProcessor::processPacket(PacketJob& job) {
         return PacketAction::DROP;
     }
     
+    bool was_classified = (conn->state == ConnectionState::CLASSIFIED);
+
     // If connection not yet classified, try to inspect payload
-    if (conn->state != ConnectionState::CLASSIFIED && job.payload_length > 0) {
+    if (!was_classified && job.payload_length > 0) {
         inspectPayload(job, conn);
     }
     
     // Check rules (even for classified connections, as rules might change)
-    return checkRules(job, conn);
+    PacketAction action = checkRules(job, conn);
+
+    // Emit single IPC event when connection transitions to CLASSIFIED and is not blocked
+    if (!was_classified && conn->state == ConnectionState::CLASSIFIED && action != PacketAction::DROP) {
+        if (ipc_emitter_) {
+            ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(conn->app_type), false, "", job.data.size());
+        }
+    }
+
+    return action;
 }
 
 void FastPathProcessor::inspectPayload(PacketJob& job, Connection* conn) {
@@ -135,7 +146,6 @@ void FastPathProcessor::inspectPayload(PacketJob& job, Connection* conn) {
         if (domain) {
             conn_tracker_.classifyConnection(conn, AppType::DNS, *domain);
             if (engine_stats_) engine_stats_->app_counts[static_cast<size_t>(AppType::DNS)]++;
-            if (ipc_emitter_) ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(AppType::DNS), false, "", job.data.size());
             return;
         }
     }
@@ -144,11 +154,9 @@ void FastPathProcessor::inspectPayload(PacketJob& job, Connection* conn) {
     if (job.tuple.dst_port == 80) {
         conn_tracker_.classifyConnection(conn, AppType::HTTP, "");
         if (engine_stats_) engine_stats_->app_counts[static_cast<size_t>(AppType::HTTP)]++;
-        if (ipc_emitter_) ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(AppType::HTTP), false, "", job.data.size());
     } else if (job.tuple.dst_port == 443) {
         conn_tracker_.classifyConnection(conn, AppType::HTTPS, "");
         if (engine_stats_) engine_stats_->app_counts[static_cast<size_t>(AppType::HTTPS)]++;
-        if (ipc_emitter_) ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(AppType::HTTPS), false, "", job.data.size());
     }
 }
 
@@ -171,7 +179,6 @@ bool FastPathProcessor::tryExtractSNI(const PacketJob& job, Connection* conn) {
         AppType app = sniToAppType(*sni);
         conn_tracker_.classifyConnection(conn, app, *sni);
         if (engine_stats_) engine_stats_->app_counts[static_cast<size_t>(app)]++;
-        if (ipc_emitter_) ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(app), false, "", job.data.size());
         
         if (app != AppType::UNKNOWN && app != AppType::HTTPS) {
             classification_hits_++;
@@ -199,7 +206,6 @@ bool FastPathProcessor::tryExtractHTTPHost(const PacketJob& job, Connection* con
         AppType app = sniToAppType(*host);
         conn_tracker_.classifyConnection(conn, app, *host);
         if (engine_stats_) engine_stats_->app_counts[static_cast<size_t>(app)]++;
-        if (ipc_emitter_) ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(app), false, "", job.data.size());
         
         if (app != AppType::UNKNOWN && app != AppType::HTTP) {
             classification_hits_++;

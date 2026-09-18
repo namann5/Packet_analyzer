@@ -22,6 +22,9 @@ public:
     // Send a pre-formatted JSON string (automatically appends '\n')
     bool sendRawJson(const std::string& json_str);
 
+    // JSON string escaping helper
+    static std::string escapeJSONString(const std::string& input);
+
     // Emit per-connection classification event (§4.2 schema)
     void emitAppClassified(const FiveTuple& tuple,
                            const std::string& app,

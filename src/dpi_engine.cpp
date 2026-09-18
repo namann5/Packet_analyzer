@@ -120,6 +120,11 @@ void DPIEngine::stop() {
         output_thread_.join();
     }
 
+    // Disconnect IPC emitter so pending sends unblock immediately
+    if (ipc_emitter_) {
+        ipc_emitter_->disconnect();
+    }
+
     if (ipc_thread_.joinable()) {
         ipc_thread_.join();
     }

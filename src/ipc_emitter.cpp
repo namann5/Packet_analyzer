@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <chrono>
 #include <cstring>
+#include <cstdio>
 
 #ifdef _WIN32
   #include <winsock2.h>
@@ -13,6 +14,7 @@
   #include <sys/socket.h>
   #include <netinet/in.h>
   #include <arpa/inet.h>
+  #include <netdb.h>
   #include <unistd.h>
 #endif
 
@@ -48,38 +50,83 @@ IPCEmitter::~IPCEmitter() {
 #endif
 }
 
+std::string IPCEmitter::escapeJSONString(const std::string& input) {
+    std::string out;
+    out.reserve(input.size() + 8);
+    for (char c : input) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+                    out += buf;
+                } else {
+                    out += c;
+                }
+                break;
+        }
+    }
+    return out;
+}
+
 bool IPCEmitter::connect(const std::string& host, uint16_t port) {
     std::lock_guard<std::mutex> lock(socket_mutex_);
+
+    if (connected_) {
+        if (host_ == host && port_ == port) {
+            return true;
+        }
+        // Endpoint changed - disconnect existing socket first
+#ifdef _WIN32
+        if (sock_ != ~0ULL) {
+            ::closesocket(static_cast<SOCKET>(sock_));
+            sock_ = ~0ULL;
+        }
+#else
+        if (sock_ >= 0) {
+            ::close(sock_);
+            sock_ = -1;
+        }
+#endif
+        connected_ = false;
+    }
+
     host_ = host;
     port_ = port;
 
-    if (connected_) {
-        return true;
+    struct addrinfo hints{}, *res = nullptr;
+    std::memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    std::string port_str = std::to_string(port_);
+    if (getaddrinfo(host_.c_str(), port_str.c_str(), &hints, &res) != 0 || !res) {
+        return false;
     }
 
 #ifdef _WIN32
-    SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    SOCKET s = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (s == INVALID_SOCKET) {
+        freeaddrinfo(res);
         return false;
     }
     sock_ = static_cast<uintptr_t>(s);
 #else
-    int s = ::socket(AF_INET, SOCK_STREAM, 0);
+    int s = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (s < 0) {
+        freeaddrinfo(res);
         return false;
     }
     sock_ = s;
 #endif
-
-    struct sockaddr_in addr;
-    std::memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port_);
-
-    if (inet_pton(AF_INET, host_.c_str(), &addr.sin_addr) <= 0) {
-        disconnect();
-        return false;
-    }
 
     if (::connect(static_cast<
 #ifdef _WIN32
@@ -87,11 +134,20 @@ bool IPCEmitter::connect(const std::string& host, uint16_t port) {
 #else
         int
 #endif
-    >(sock_), reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-        disconnect();
+    >(sock_), res->ai_addr, static_cast<socklen_t>(res->ai_addrlen)) < 0) {
+        freeaddrinfo(res);
+#ifdef _WIN32
+        ::closesocket(static_cast<SOCKET>(sock_));
+        sock_ = ~0ULL;
+#else
+        ::close(sock_);
+        sock_ = -1;
+#endif
+        connected_ = false;
         return false;
     }
 
+    freeaddrinfo(res);
     connected_ = true;
     return true;
 }
@@ -127,29 +183,37 @@ bool IPCEmitter::sendRawJson(const std::string& json_str) {
         return false;
     }
 
-    int bytes_sent = ::send(
-        static_cast<
+    size_t total_sent = 0;
+    while (total_sent < line.size()) {
+        int bytes_sent = ::send(
+            static_cast<
 #ifdef _WIN32
-            SOCKET
+                SOCKET
 #else
-            int
+                int
 #endif
-        >(sock_),
-        line.c_str(),
-        static_cast<int>(line.size()),
-        0
-    );
+            >(sock_),
+            line.c_str() + total_sent,
+            static_cast<int>(line.size() - total_sent),
+            0
+        );
 
-    if (bytes_sent <= 0) {
+        if (bytes_sent <= 0) {
 #ifdef _WIN32
-        ::closesocket(static_cast<SOCKET>(sock_));
-        sock_ = ~0ULL;
+            if (sock_ != ~0ULL) {
+                ::closesocket(static_cast<SOCKET>(sock_));
+                sock_ = ~0ULL;
+            }
 #else
-        ::close(sock_);
-        sock_ = -1;
+            if (sock_ >= 0) {
+                ::close(sock_);
+                sock_ = -1;
+            }
 #endif
-        connected_ = false;
-        return false;
+            connected_ = false;
+            return false;
+        }
+        total_sent += static_cast<size_t>(bytes_sent);
     }
 
     return true;
@@ -163,20 +227,23 @@ void IPCEmitter::emitAppClassified(const FiveTuple& tuple,
     double ts = std::chrono::duration<double>(
         std::chrono::system_clock::now().time_since_epoch()).count();
 
+    std::string safe_app = escapeJSONString(app.empty() ? "Unknown" : app);
+    std::string safe_reason = reason.empty() ? "" : escapeJSONString(reason);
+
     std::ostringstream ss;
     ss << "{\"event\":\"app_classified\","
        << "\"ts\":" << std::fixed << std::setprecision(3) << ts << ","
        << "\"five_tuple\":{"
-       << "\"src_ip\":\"" << formatIP(tuple.src_ip) << "\","
+       << "\"src_ip\":\"" << escapeJSONString(formatIP(tuple.src_ip)) << "\","
        << "\"src_port\":" << tuple.src_port << ","
-       << "\"dst_ip\":\"" << formatIP(tuple.dst_ip) << "\","
+       << "\"dst_ip\":\"" << escapeJSONString(formatIP(tuple.dst_ip)) << "\","
        << "\"dst_port\":" << tuple.dst_port << ","
        << "\"proto\":\"" << (tuple.protocol == 6 ? "TCP" : (tuple.protocol == 17 ? "UDP" : "OTHER")) << "\""
        << "},"
-       << "\"app\":\"" << (app.empty() ? "Unknown" : app) << "\","
+       << "\"app\":\"" << safe_app << "\","
        << "\"bytes\":" << packet_bytes << ","
        << "\"blocked\":" << (blocked ? "true" : "false") << ","
-       << "\"reason\":" << (reason.empty() ? "null" : ("\"" + reason + "\""))
+       << "\"reason\":" << (safe_reason.empty() ? "null" : ("\"" + safe_reason + "\""))
        << "}";
 
     sendRawJson(ss.str());
@@ -192,10 +259,10 @@ void IPCEmitter::emitAnomaly(const std::string& type,
     std::ostringstream ss;
     ss << "{\"event\":\"anomaly\","
        << "\"ts\":" << std::fixed << std::setprecision(3) << ts << ","
-       << "\"type\":\"" << type << "\","
+       << "\"type\":\"" << escapeJSONString(type) << "\","
        << "\"detail\":{"
-       << "\"src_ip\":\"" << src_ip << "\","
-       << "\"target\":\"" << target_ip << "\","
+       << "\"src_ip\":\"" << escapeJSONString(src_ip) << "\","
+       << "\"target\":\"" << escapeJSONString(target_ip) << "\","
        << "\"ports_seen\":" << ports_seen
        << "}}";
 
@@ -219,7 +286,7 @@ void IPCEmitter::emitStats(const DPIStats& stats, double throughput_bps) {
         uint64_t count = stats.app_counts[i].load();
         if (count > 0) {
             if (!first) ss << ",";
-            ss << "\"" << appTypeToString(static_cast<AppType>(i)) << "\":" << count;
+            ss << "\"" << escapeJSONString(appTypeToString(static_cast<AppType>(i))) << "\":" << count;
             first = false;
         }
     }
