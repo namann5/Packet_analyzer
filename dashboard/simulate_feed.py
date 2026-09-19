@@ -119,6 +119,8 @@ def main() -> None:
 
     while True:
         try:
+            if args.duration > 0 and (time.time() - start_time) >= args.duration:
+                break
             print(f"[+] Connecting to dashboard at {args.host}:{args.port}...")
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect((args.host, args.port))
