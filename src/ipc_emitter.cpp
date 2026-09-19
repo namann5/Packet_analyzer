@@ -132,24 +132,23 @@ bool IPCEmitter::connect(const std::string& host, uint16_t port) {
     sock_ = s;
 #endif
 
-    if (::connect(static_cast<
 #ifdef _WIN32
-        SOCKET
-#else
-        int
-#endif
-    >(sock_), res->ai_addr, static_cast<socklen_t>(res->ai_addrlen)) < 0) {
+    if (::connect(static_cast<SOCKET>(sock_), res->ai_addr, static_cast<int>(res->ai_addrlen)) < 0) {
         freeaddrinfo(res);
-#ifdef _WIN32
         ::closesocket(static_cast<SOCKET>(sock_));
         sock_ = ~0ULL;
-#else
-        ::close(sock_);
-        sock_ = -1;
-#endif
         connected_ = false;
         return false;
     }
+#else
+    if (::connect(sock_, res->ai_addr, static_cast<socklen_t>(res->ai_addrlen)) < 0) {
+        freeaddrinfo(res);
+        ::close(sock_);
+        sock_ = -1;
+        connected_ = false;
+        return false;
+    }
+#endif
 
     freeaddrinfo(res);
     connected_ = true;
