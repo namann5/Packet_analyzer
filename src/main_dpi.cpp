@@ -146,10 +146,13 @@ int main(int argc, char* argv[]) {
             config.enable_ipc = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 uint16_t port = 0;
-                if (parsePort(argv[i + 1], port)) {
-                    config.ipc_port = port;
-                    ++i;
+                if (!parsePort(argv[i + 1], port)) {
+                    std::cerr << "Invalid port for --export-stats (must be 1-65535): "
+                              << argv[i + 1] << "\n";
+                    return 1;
                 }
+                config.ipc_port = port;
+                ++i;
             }
         } else if (arg == "--ipc-host" && i + 1 < argc) {
             config.ipc_host = argv[++i];
