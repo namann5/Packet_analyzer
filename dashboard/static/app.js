@@ -343,7 +343,7 @@ function renderConnections() {
   }
 
   if (countDisplay) {
-    countDisplay.textContent = `${filtered.length} flows shown`;
+    countDisplay.textContent = `${Math.min(filtered.length, 50)} flows shown`;
   }
 
   if (!filtered.length) {
