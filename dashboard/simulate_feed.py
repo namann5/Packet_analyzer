@@ -124,7 +124,7 @@ def main() -> None:
             sock.connect((args.host, args.port))
             print(f"[✓] Connected successfully! Streaming events...\n")
             break
-        except ConnectionRefusedError:
+        except OSError:
             print("[-] Connection refused. Ensure dashboard server is running (uvicorn dashboard.server:app).")
             print("    Retrying in 2 seconds (Ctrl+C to abort)...")
             time.sleep(2.0)
