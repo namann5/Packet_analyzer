@@ -330,3 +330,27 @@ def test_websocket_endpoint():
         assert "total_packets" in data
         assert "total_bytes" in data
         assert data["total_packets"] == 1
+
+
+# ============================================================================
+# 6. Simulator Feed Generator Unit Tests
+# ============================================================================
+
+def test_simulate_feed_generators():
+    from dashboard.simulate_feed import generate_packet_event, generate_anomaly_event
+
+    pkt = generate_packet_event()
+    assert pkt["event"] == "app_classified"
+    assert "five_tuple" in pkt
+    assert "src_ip" in pkt["five_tuple"]
+    assert "dst_ip" in pkt["five_tuple"]
+    assert "app" in pkt
+    assert isinstance(pkt["bytes"], int)
+    assert isinstance(pkt["blocked"], bool)
+
+    anomaly = generate_anomaly_event()
+    assert anomaly["event"] == "anomaly"
+    assert anomaly["type"] in ["PORT_SCAN", "SYN_FLOOD", "DNS_TUNNEL"]
+    assert "detail" in anomaly
+    assert "src_ip" in anomaly["detail"]
+
