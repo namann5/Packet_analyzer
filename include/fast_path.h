@@ -6,6 +6,7 @@
 #include "connection_tracker.h"
 #include "rule_manager.h"
 #include "sni_extractor.h"
+#include "ipc_emitter.h"
 #include <thread>
 #include <atomic>
 #include <memory>
@@ -40,7 +41,9 @@ public:
     // output_callback: Called when packet should be forwarded
     FastPathProcessor(int fp_id,
                       RuleManager* rule_manager,
-                      PacketOutputCallback output_callback);
+                      PacketOutputCallback output_callback,
+                      IPCEmitter* ipc_emitter = nullptr,
+                      DPIStats* engine_stats = nullptr);
     
     ~FastPathProcessor();
     
@@ -89,6 +92,10 @@ private:
     // Output callback
     PacketOutputCallback output_callback_;
     
+    // Optional IPC Emitter & Global Engine Stats pointers
+    IPCEmitter* ipc_emitter_{nullptr};
+    DPIStats* engine_stats_{nullptr};
+    
     // Statistics
     std::atomic<uint64_t> packets_processed_{0};
     std::atomic<uint64_t> packets_forwarded_{0};
@@ -133,7 +140,9 @@ public:
     // output_callback: Shared output callback
     FPManager(int num_fps,
               RuleManager* rule_manager,
-              PacketOutputCallback output_callback);
+              PacketOutputCallback output_callback,
+              IPCEmitter* ipc_emitter = nullptr,
+              DPIStats* engine_stats = nullptr);
     
     ~FPManager();
     
