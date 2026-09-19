@@ -120,7 +120,7 @@ if get_option('tests')
     py_inst = py_mod.find_installation('python', required: false)
   endif
   if py_inst.found()
-    r = run_command(py_inst, '-c', 'import pytest', check: false)
+    r = run_command(py_inst, '-c', 'import pytest, fastapi.testclient, httpx, reportlab', check: false)
     if r.returncode() == 0
       test(
         'dashboard_tests',
