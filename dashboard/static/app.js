@@ -481,7 +481,7 @@ async function pollConnections() {
   try {
     const res = await fetch("/api/connections");
     const conns = await res.json();
-    if (Array.isArray(conns) && conns.length > 0) {
+    if (Array.isArray(conns)) {
       connStore = conns;
       renderConnections();
     }
