@@ -41,6 +41,9 @@ Options:
   --block-ip <ip>         Block packets from source IP
   --block-app <app>       Block application (e.g., YouTube, Facebook)
   --block-domain <dom>    Block domain (supports wildcards: *.facebook.com)
+  --export-stats [port]   Stream live JSON events to dashboard IPC port (default: 9000)
+  --ipc-host <host>       Dashboard IPC host (default: 127.0.0.1)
+  --ipc-port <port>       Dashboard IPC port (default: 9000)
   -o <file>               Output PCAP for forwarded traffic (live mode)
   --lbs <n>               Number of load balancer threads (default: 2)
   --fps <n>               FP threads per LB (default: 2)
@@ -49,10 +52,22 @@ Options:
 
 Examples:
   )" << program << R"( capture.pcap filtered.pcap
-  )" << program << R"( -i eth0 -o live.pcap --rules rules.json
+  )" << program << R"( -i eth0 -o live.pcap --rules rules.json --export-stats 9000
   )" << program << R"( -l
   )" << program << R"( capture.pcap filtered.pcap --block-app YouTube --rules rules.json
 )";
+}
+
+bool parsePort(const std::string& str, uint16_t& out_port) {
+    try {
+        size_t idx = 0;
+        long val = std::stol(str, &idx);
+        if (idx == str.size() && val >= 1 && val <= 65535) {
+            out_port = static_cast<uint16_t>(val);
+            return true;
+        }
+    } catch (...) {}
+    return false;
 }
 
 } // namespace
@@ -127,6 +142,27 @@ int main(int argc, char* argv[]) {
             block_apps.push_back(argv[++i]);
         } else if (arg == "--block-domain" && i + 1 < argc) {
             block_domains.push_back(argv[++i]);
+        } else if (arg == "--export-stats" || arg == "--ipc") {
+            config.enable_ipc = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                uint16_t port = 0;
+                if (parsePort(argv[i + 1], port)) {
+                    config.ipc_port = port;
+                    ++i;
+                }
+            }
+        } else if (arg == "--ipc-host" && i + 1 < argc) {
+            config.ipc_host = argv[++i];
+            config.enable_ipc = true;
+        } else if (arg == "--ipc-port" && i + 1 < argc) {
+            uint16_t port = 0;
+            if (parsePort(argv[++i], port)) {
+                config.ipc_port = port;
+                config.enable_ipc = true;
+            } else {
+                std::cerr << "Invalid port for --ipc-port (must be 1-65535): " << argv[i] << "\n";
+                return 1;
+            }
         } else if (arg == "--rules" && i + 1 < argc) {
             rules_store_path = argv[++i];
         } else if (arg == "--lbs" && i + 1 < argc) {
