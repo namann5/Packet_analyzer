@@ -53,9 +53,10 @@ IPCEmitter::IPCEmitter() {
 IPCEmitter::~IPCEmitter() {
     running_ = false;
     queue_.shutdown();
-    closeSocket();
-    if (sender_thread_.joinable()) {
-        sender_thread_.join();
+    host_ = host;
+    port_ = port;
+    connected_ = false;
+    return true;
     }
 #ifdef _WIN32
     cleanupWSA();
