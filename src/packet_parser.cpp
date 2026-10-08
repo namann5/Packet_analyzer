@@ -215,6 +215,8 @@ std::string PacketParser::protocolToString(uint8_t protocol) {
         case Protocol::ICMP: return "ICMP";
         case Protocol::TCP:  return "TCP";
         case Protocol::UDP:  return "UDP";
+        case Protocol::ESP:  return "ESP";
+        case Protocol::AH:   return "AH";
         default: return "Unknown(" + std::to_string(protocol) + ")";
     }
 }

@@ -1,0 +1,20 @@
+# ============================================================================
+# SYNTHETIC TEST BLOCKLIST - NOT REAL THREAT INTEL
+# ============================================================================
+# The domains below are fabricated for offline testing/demos only. They are NOT
+# real URLhaus indicators. Do NOT use this file as a production blocklist.
+# For real protection use: --download-urlhaus, or --urlhaus <real-list-file>.
+# ============================================================================
+#
+http://bad-malware-domain.com/bin.sh
+https://c2-server.evilcorp.biz/endpoint
+http://ransomware-distrib.net/gate.php
+https://urlhaus-test-malware.org/download/payload.exe
+http://trojan-payload-drop.info/loader
+https://malicious-domain.xyz/bot.exe
+http://phishing-portal-bank.com/login.html
+http://botnet-command.top/cnc
+https://stealer-logs.cc/panel
+http://cryptominer-pool.club/xmr.bin
+http://threat-actor-c2.ru/api/beacon
+https://apt-backdoor-update.com/patch.zip

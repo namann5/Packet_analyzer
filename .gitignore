@@ -11,6 +11,9 @@ packet_analyzer
 # Test output
 output*.pcap
 *.log
+urlhaus_online.txt
+events*.jsonl
+events*.json
 
 # Python
 __pycache__/

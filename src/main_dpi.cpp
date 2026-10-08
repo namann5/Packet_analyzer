@@ -50,6 +50,16 @@ Options:
   -l, --list-interfaces   List available capture interfaces and exit
   --verbose               Enable verbose output
 
+Security Options (Track B):
+  --urlhaus <file>        Load URLhaus blocklist from file
+  --download-urlhaus      Fetch latest URLhaus blocklist online
+  --vpn-ranges <file>     Load VPN CIDR ranges JSON file
+  --block-vpn             Block detected VPN and tunneled traffic
+  --no-block-malicious    Do not auto-block malicious domains
+  --port-scan-thresh <n>  Port scan unique port threshold (default: 15)
+  --syn-flood-thresh <n>  SYN flood packets/sec threshold (default: 500)
+  --events-out <file>     Write JSON security events to file
+
 Examples:
   )" << program << R"( capture.pcap filtered.pcap
   )" << program << R"( -i eth0 -o live.pcap --rules rules.json --export-stats 9000
@@ -68,6 +78,43 @@ bool parsePort(const std::string& str, uint16_t& out_port) {
         }
     } catch (...) {}
     return false;
+}
+
+// Parse a non-negative decimal integer without throwing.
+bool parseULong(const std::string& str, unsigned long& out) {
+    if (str.empty()) return false;
+    for (char c : str) {
+        if (c < '0' || c > '9') return false;
+    }
+    try {
+        size_t idx = 0;
+        unsigned long val = std::stoul(str, &idx);
+        if (idx != str.size()) return false;
+        out = val;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+// Parse a signed decimal integer without throwing.
+bool parseInt(const std::string& str, int& out) {
+    if (str.empty()) return false;
+    size_t i = 0;
+    if (str[0] == '-' || str[0] == '+') i = 1;
+    if (i == str.size()) return false;
+    for (size_t j = i; j < str.size(); ++j) {
+        if (str[j] < '0' || str[j] > '9') return false;
+    }
+    try {
+        size_t idx = 0;
+        int val = std::stoi(str, &idx);
+        if (idx != str.size()) return false;
+        out = val;
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 } // namespace
@@ -115,15 +162,18 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (live_interface.empty() && (argc < 3 || argv[1][0] == '-')) {
-        printUsage(argv[0]);
-        return 1;
-    }
-
-    // Positional args: file mode uses argv[1]/argv[2].
+    int opt_start = 1;
     if (live_interface.empty()) {
+        if (argv[1][0] == '-') {
+            printUsage(argv[0]);
+            return 1;
+        }
         input_file = argv[1];
-        output_file = argv[2];
+        opt_start = 2;
+        if (argc >= 3 && argv[2][0] != '-') {
+            output_file = argv[2];
+            opt_start = 3;
+        }
     }
 
     DPIEngine::Config config;
@@ -134,7 +184,7 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> block_apps;
     std::vector<std::string> block_domains;
 
-    for (int i = (live_interface.empty() ? 3 : 1); i < argc; i++) {
+    for (int i = opt_start; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--block-ip" && i + 1 < argc) {
             block_ips.push_back(argv[++i]);
@@ -165,10 +215,46 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--rules" && i + 1 < argc) {
             rules_store_path = argv[++i];
+        } else if (arg == "--urlhaus" && i + 1 < argc) {
+            config.blocklist_file = argv[++i];
+        } else if (arg == "--download-urlhaus") {
+            config.download_urlhaus = true;
+        } else if (arg == "--vpn-ranges" && i + 1 < argc) {
+            config.vpn_ranges_file = argv[++i];
+        } else if (arg == "--block-vpn") {
+            config.block_vpn = true;
+        } else if (arg == "--no-block-malicious") {
+            config.block_malicious = false;
+        } else if (arg == "--port-scan-thresh" && i + 1 < argc) {
+            unsigned long v = 0;
+            if (!parseULong(argv[++i], v)) {
+                std::cerr << "Invalid value for --port-scan-thresh: " << argv[i] << "\n";
+                return 1;
+            }
+            config.port_scan_threshold = static_cast<size_t>(v);
+        } else if (arg == "--syn-flood-thresh" && i + 1 < argc) {
+            unsigned long v = 0;
+            if (!parseULong(argv[++i], v)) {
+                std::cerr << "Invalid value for --syn-flood-thresh: " << argv[i] << "\n";
+                return 1;
+            }
+            config.syn_flood_threshold = static_cast<size_t>(v);
+        } else if (arg == "--events-out" && i + 1 < argc) {
+            config.events_output_file = argv[++i];
         } else if (arg == "--lbs" && i + 1 < argc) {
-            config.num_load_balancers = std::stoi(argv[++i]);
+            int v = 0;
+            if (!parseInt(argv[++i], v) || v <= 0) {
+                std::cerr << "Invalid value for --lbs (must be a positive integer): " << argv[i] << "\n";
+                return 1;
+            }
+            config.num_load_balancers = v;
         } else if (arg == "--fps" && i + 1 < argc) {
-            config.fps_per_lb = std::stoi(argv[++i]);
+            int v = 0;
+            if (!parseInt(argv[++i], v) || v <= 0) {
+                std::cerr << "Invalid value for --fps (must be a positive integer): " << argv[i] << "\n";
+                return 1;
+            }
+            config.fps_per_lb = v;
         } else if (arg == "--verbose") {
             config.verbose = true;
         } else if (arg == "--help" || arg == "-h") {

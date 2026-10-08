@@ -1,0 +1,22 @@
+[
+  {
+    "cidr": "10.8.0.0/24",
+    "name": "OpenVPN Default Subnet"
+  },
+  {
+    "cidr": "10.13.13.0/24",
+    "name": "WireGuard Subnet"
+  },
+  {
+    "cidr": "198.18.0.0/15",
+    "name": "Commercial VPN Ranges (Example)"
+  },
+  {
+    "cidr": "185.220.101.0/24",
+    "name": "Privacy VPN Exit Node"
+  },
+  {
+    "cidr": "192.168.100.0/24",
+    "name": "Corporate IPSec Gateway"
+  }
+]

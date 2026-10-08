@@ -39,6 +39,42 @@ bool DPIEngine::initialize() {
         rule_manager_->loadRules(config_.rules_file);
     }
 
+    // Initialize Track B Security Components
+    // 1. Anomaly Detector
+    AnomalyDetector::Config anom_cfg;
+    anom_cfg.port_scan_threshold = config_.port_scan_threshold;
+    anom_cfg.port_scan_window_sec = config_.port_scan_window_sec;
+    anom_cfg.syn_flood_threshold = config_.syn_flood_threshold;
+    anom_cfg.syn_flood_window_sec = config_.syn_flood_window_sec;
+    anomaly_detector_ = std::make_unique<AnomalyDetector>(anom_cfg);
+
+    // 2. Malicious Blocklist
+    blocklist_ = std::make_unique<Blocklist>();
+    if (config_.download_urlhaus) {
+        blocklist_->downloadOnline();
+    } else if (!config_.blocklist_file.empty()) {
+        size_t count = blocklist_->loadFromFile(config_.blocklist_file);
+        if (count == 0) {
+            blocklist_->loadBundledSample();
+        }
+    } else {
+        blocklist_->loadBundledSample();
+    }
+
+    // 3. VPN Detector
+    VPNDetector::Config vpn_cfg;
+    vpn_cfg.block_vpn = config_.block_vpn;
+    vpn_cfg.vpn_ranges_path = config_.vpn_ranges_file;
+    vpn_detector_ = std::make_unique<VPNDetector>(vpn_cfg);
+
+    // Open events file if specified
+    if (!config_.events_output_file.empty()) {
+        if (!EventSink::instance().openFile(config_.events_output_file)) {
+            std::cerr << "[DPIEngine] Warning: could not open events output file: "
+                      << config_.events_output_file << "\n";
+        }
+    }
+
     // Create IPC emitter if enabled
     if (config_.enable_ipc) {
         ipc_emitter_ = std::make_unique<IPCEmitter>();
@@ -55,9 +91,19 @@ bool DPIEngine::initialize() {
         handleOutput(job, action);
     };
     
-    // Create FP manager (creates FP threads and their queues)
+    // Create FP manager with security modules passed
     int total_fps = config_.num_load_balancers * config_.fps_per_lb;
-    fp_manager_ = std::make_unique<FPManager>(total_fps, rule_manager_.get(), output_cb, ipc_emitter_.get(), &stats_);
+    fp_manager_ = std::make_unique<FPManager>(
+        total_fps,
+        rule_manager_.get(),
+        output_cb,
+        anomaly_detector_.get(),
+        blocklist_.get(),
+        vpn_detector_.get(),
+        ipc_emitter_.get(),
+        &stats_,
+        config_.block_malicious
+    );
     
     // Create LB manager (creates LB threads, connects to FP queues)
     lb_manager_ = std::make_unique<LBManager>(
@@ -72,7 +118,7 @@ bool DPIEngine::initialize() {
         global_conn_table_->registerTracker(i, &fp_manager_->getFP(i).getConnectionTracker());
     }
     
-    std::cout << "[DPIEngine] Initialized successfully\n";
+    std::cout << "[DPIEngine] Initialized successfully with Track B security detectors\n";
     return true;
 }
 
@@ -178,7 +224,11 @@ bool DPIEngine::processFile(const std::string& input_file,
                             const std::string& output_file) {
     
     std::cout << "\n[DPIEngine] Processing: " << input_file << "\n";
-    std::cout << "[DPIEngine] Output to:  " << output_file << "\n\n";
+    if (!output_file.empty()) {
+        std::cout << "[DPIEngine] Output to:  " << output_file << "\n\n";
+    } else {
+        std::cout << "\n";
+    }
     
     FileCapture source;
     std::string error;
@@ -273,7 +323,9 @@ bool DPIEngine::runCapture(CaptureSource& source,
         std::cout << "[DPIEngine] Live capture stopped.\n";
     } else {
         std::cout << "[DPIEngine] Processing complete!\n";
-        std::cout << "[DPIEngine] Output written to: " << output_file << "\n";
+        if (!output_file.empty()) {
+            std::cout << "[DPIEngine] Output written to: " << output_file << "\n";
+        }
     }
     std::cout << generateReport();
     std::cout << fp_manager_->generateClassificationReport();
@@ -305,8 +357,10 @@ void DPIEngine::readerThreadLoop(CaptureSource* source) {
             continue;  // Skip unparseable packets
         }
         
-        // Only process IP packets with TCP/UDP
-        if (!parsed.has_ip || (!parsed.has_tcp && !parsed.has_udp)) {
+        // Process IP packets with TCP/UDP or IPSec (ESP/AH)
+        if (!parsed.has_ip || (!parsed.has_tcp && !parsed.has_udp &&
+                               parsed.protocol != PacketAnalyzer::Protocol::ESP &&
+                               parsed.protocol != PacketAnalyzer::Protocol::AH)) {
             continue;
         }
         
@@ -387,6 +441,8 @@ PacketJob DPIEngine::createPacketJob(const CapturePacket& raw,
             job.payload_offset = job.transport_offset + tcp_header_len;
         } else if (parsed.has_udp) {
             job.payload_offset = job.transport_offset + 8;  // UDP header is 8 bytes
+        } else {
+            job.payload_offset = job.transport_offset;      // IP payload (ESP/AH)
         }
         
         if (job.payload_offset < job.data.size()) {
@@ -570,10 +626,50 @@ std::string DPIEngine::generateReport() const {
         ss << "║   Blocked Domains:    " << std::setw(12) << rule_stats.blocked_domains << "                        ║\n";
         ss << "║   Blocked Ports:      " << std::setw(12) << rule_stats.blocked_ports << "                        ║\n";
     }
+
+    const auto& sec_stats = EventSink::instance().getStats();
+    ss << "╠══════════════════════════════════════════════════════════════╣\n";
+    ss << "║ SECURITY & THREAT DETECTION (TRACK B)                         ║\n";
+    ss << "║   Port Scan Alerts:   " << std::setw(12) << sec_stats.port_scan_alerts.load() << "                        ║\n";
+    ss << "║   SYN Flood Alerts:   " << std::setw(12) << sec_stats.syn_flood_alerts.load() << "                        ║\n";
+    ss << "║   DNS Tunnel Alerts:  " << std::setw(12) << sec_stats.dns_tunnel_alerts.load() << "                        ║\n";
+    ss << "║   Malicious Blocks:   " << std::setw(12) << sec_stats.malicious_domain_blocks.load() << "                        ║\n";
+    ss << "║   VPN Detected:       " << std::setw(12) << sec_stats.vpn_detections.load() << "                        ║\n";
+    ss << "║   VPN Blocked:        " << std::setw(12) << sec_stats.vpn_blocks.load() << "                        ║\n";
+    if (blocklist_) {
+        ss << "║   Blocklist Domains:  " << std::setw(12) << blocklist_->size() << "                        ║\n";
+    }
+    if (vpn_detector_) {
+        ss << "║   VPN CIDR Ranges:    " << std::setw(12) << vpn_detector_->getRangeCount() << "                        ║\n";
+    }
     
     ss << "╚══════════════════════════════════════════════════════════════╝\n";
     
     return ss.str();
+}
+
+void DPIEngine::loadBlocklist(const std::string& path) {
+    if (blocklist_) {
+        blocklist_->loadFromFile(path);
+    }
+}
+
+void DPIEngine::downloadBlocklist() {
+    if (blocklist_) {
+        blocklist_->downloadOnline();
+    }
+}
+
+void DPIEngine::loadVPNRanges(const std::string& path) {
+    if (vpn_detector_) {
+        vpn_detector_->loadVPNRanges(path);
+    }
+}
+
+void DPIEngine::setBlockVPN(bool block) {
+    if (vpn_detector_) {
+        vpn_detector_->setBlockVPN(block);
+    }
 }
 
 std::string DPIEngine::generateClassificationReport() const {

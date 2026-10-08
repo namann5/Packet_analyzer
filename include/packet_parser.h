@@ -121,6 +121,8 @@ namespace Protocol {
     constexpr uint8_t ICMP = 1;
     constexpr uint8_t TCP = 6;
     constexpr uint8_t UDP = 17;
+    constexpr uint8_t ESP = 50;  // IPSec ESP
+    constexpr uint8_t AH  = 51;  // IPSec AH
 }
 
 // EtherType values

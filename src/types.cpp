@@ -49,6 +49,10 @@ std::string appTypeToString(AppType type) {
         case AppType::DISCORD:    return "Discord";
         case AppType::GITHUB:     return "GitHub";
         case AppType::CLOUDFLARE: return "Cloudflare";
+        case AppType::WIREGUARD:  return "WireGuard";
+        case AppType::OPENVPN:    return "OpenVPN";
+        case AppType::IPSEC:      return "IPSec";
+        case AppType::VPN_GENERIC: return "VPN";
         default:                  return "Unknown";
     }
 }

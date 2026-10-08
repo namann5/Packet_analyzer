@@ -79,6 +79,11 @@ enum class AppType {
     DISCORD,
     GITHUB,
     CLOUDFLARE,
+    // VPN and tunneling
+    WIREGUARD,
+    OPENVPN,
+    IPSEC,
+    VPN_GENERIC,
     // Add more as needed
     APP_COUNT  // Keep this last for counting
 };

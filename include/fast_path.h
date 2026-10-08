@@ -6,6 +6,10 @@
 #include "connection_tracker.h"
 #include "rule_manager.h"
 #include "sni_extractor.h"
+#include "anomaly_detector.h"
+#include "blocklist.h"
+#include "vpn_detector.h"
+#include "events.h"
 #include "ipc_emitter.h"
 #include <thread>
 #include <atomic>
@@ -42,8 +46,12 @@ public:
     FastPathProcessor(int fp_id,
                       RuleManager* rule_manager,
                       PacketOutputCallback output_callback,
+                      AnomalyDetector* anomaly_detector = nullptr,
+                      Blocklist* blocklist = nullptr,
+                      VPNDetector* vpn_detector = nullptr,
                       IPCEmitter* ipc_emitter = nullptr,
-                      DPIStats* engine_stats = nullptr);
+                      DPIStats* engine_stats = nullptr,
+                      bool block_malicious = true);
     
     ~FastPathProcessor();
     
@@ -89,12 +97,20 @@ private:
     // Rule manager (shared, read-only)
     RuleManager* rule_manager_;
     
+    // Security detectors (Track B)
+    AnomalyDetector* anomaly_detector_{nullptr};
+    Blocklist* blocklist_{nullptr};
+    VPNDetector* vpn_detector_{nullptr};
+    
     // Output callback
     PacketOutputCallback output_callback_;
     
     // Optional IPC Emitter & Global Engine Stats pointers
     IPCEmitter* ipc_emitter_{nullptr};
     DPIStats* engine_stats_{nullptr};
+
+    // Whether malicious-domain hits should be blocked (--no-block-malicious)
+    bool block_malicious_{true};
     
     // Statistics
     std::atomic<uint64_t> packets_processed_{0};
@@ -115,6 +131,10 @@ private:
     
     // Inspect packet payload for classification
     void inspectPayload(PacketJob& job, Connection* conn);
+
+    // Inspect a DNS payload for tunneling / blocklist hits. Runs for every DNS
+    // packet on a flow (not only the first, unclassified one).
+    void inspectDNSPayload(PacketJob& job, Connection* conn);
     
     // Extract SNI from TLS Client Hello
     bool tryExtractSNI(const PacketJob& job, Connection* conn);
@@ -141,8 +161,12 @@ public:
     FPManager(int num_fps,
               RuleManager* rule_manager,
               PacketOutputCallback output_callback,
+              AnomalyDetector* anomaly_detector = nullptr,
+              Blocklist* blocklist = nullptr,
+              VPNDetector* vpn_detector = nullptr,
               IPCEmitter* ipc_emitter = nullptr,
-              DPIStats* engine_stats = nullptr);
+              DPIStats* engine_stats = nullptr,
+              bool block_malicious = true);
     
     ~FPManager();
     
