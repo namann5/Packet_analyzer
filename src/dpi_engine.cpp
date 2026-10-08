@@ -240,10 +240,10 @@ bool DPIEngine::processFile(const std::string& input_file,
     return runCapture(source, output_file);
 }
 
-bool DPIEngine::processLive(const std::string& interface,
+bool DPIEngine::processLive(const std::string& iface_name,
                             const std::string& output_file) {
     
-    std::cout << "\n[DPIEngine] Live capture on interface: " << interface << "\n";
+    std::cout << "\n[DPIEngine] Live capture on interface: " << iface_name << "\n";
     if (!output_file.empty()) {
         std::cout << "[DPIEngine] Output to:  " << output_file << "\n";
     }
@@ -251,7 +251,7 @@ bool DPIEngine::processLive(const std::string& interface,
     
     LiveCapture source;
     std::string error;
-    if (!source.open(interface, error)) {
+    if (!source.open(iface_name, error)) {
         std::cerr << "[DPIEngine] Error: " << error << "\n";
         return false;
     }

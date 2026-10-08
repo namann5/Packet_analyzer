@@ -6,6 +6,13 @@ option(
 )
 
 option(
+  'npcap_sdk',
+  type: 'string',
+  value: '',
+  description: 'Path to the Npcap SDK root (Windows only, bypasses pkg-config libpcap lookup)',
+)
+
+option(
   'tests',
   type: 'boolean',
   value: true,

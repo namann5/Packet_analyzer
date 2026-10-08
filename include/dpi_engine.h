@@ -99,7 +99,7 @@ public:
     // Capture live traffic from an interface.
     // interface: network device name (e.g. "eth0")
     // output_file: optional output PCAP (empty string = no capture output)
-    bool processLive(const std::string& interface,
+    bool processLive(const std::string& iface_name,
                      const std::string& output_file = "");
     
     // Start the engine (starts all threads)

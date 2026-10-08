@@ -49,23 +49,23 @@ LiveCapture::~LiveCapture() {
 #endif
 }
 
-bool LiveCapture::open(const std::string& interface, std::string& error) {
+bool LiveCapture::open(const std::string& iface_name, std::string& error) {
 #ifdef HAVE_LIBPCAP
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t* p = pcap_open_live(
-        interface.c_str(),
+        iface_name.c_str(),
         65535,     // snaplen
         1,         // promiscuous
         100,       // read timeout (ms)
         errbuf);
 
     if (!p) {
-        error = "pcap_open_live(" + interface + ") failed: " + std::string(errbuf);
+        error = "pcap_open_live(" + iface_name + ") failed: " + std::string(errbuf);
         return false;
     }
 
     handle_ = p;
-    name_ = interface;
+    name_ = iface_name;
     fatal_error_ = false;
 
     // Build a synthetic pcap global header for optional output writing.
@@ -82,7 +82,7 @@ bool LiveCapture::open(const std::string& interface, std::string& error) {
 #else
     error = "Live capture requires libpcap. Rebuild with -Dlive_capture=true "
             "(Linux: install libpcap-dev; Windows: Npcap SDK).";
-    (void)interface;
+    (void)iface_name;
     return false;
 #endif
 }

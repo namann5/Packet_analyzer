@@ -71,7 +71,7 @@ public:
     LiveCapture() = default;
     ~LiveCapture() override;
 
-    bool open(const std::string& interface, std::string& error) override;
+    bool open(const std::string& iface_name, std::string& error) override;
     bool readNextPacket(CapturePacket& packet) override;
     bool isLive() const override { return true; }
     const std::string& name() const override { return name_; }
