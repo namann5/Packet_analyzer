@@ -436,3 +436,15 @@ If you're stuck:
 4. Google the exact error message
 
 Good luck! 🚀
+
+---
+
+## Live Capture Operational Notes
+
+Live capture uses libpcap/Npcap and reuses the exact file pipeline; only the packet source changes (LiveCapture -> same queue -> LoadBalancer -> FastPath). No sudo is needed on Windows (Npcap driver); on Linux run as root/CAP_NET_RAW.
+
+- Interface list: `dpi_engine.exe -l`
+- Capture: `dpi_engine.exe -i <interface> [--pcap-buffer 16] [--duration 60] [-o out.pcap]`
+- Promiscuous mode is always on (sees traffic not addressed to this host).
+- Snaplen is 65535. The kernel/BPF capture buffer defaults to 2 MiB (pcap_set_buffer_size); raise it with `--pcap-buffer MiB` if the report's CAPTURE STATISTICS show drops under load. The report surfaces pcap_stats() (Received / Dropped / If-Dropped / Buffer Drop Rate) - the benchmark angle for showing the multi-threaded pipeline keeps capture drops near zero.
+- Graceful shutdown: Ctrl+C sets a stop flag (no pcap_breakloop needed - capture is non-blocking polling); `--duration <sec>` auto-stops for scripts/benchmarks.

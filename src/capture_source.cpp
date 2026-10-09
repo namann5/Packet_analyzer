@@ -52,15 +52,31 @@ LiveCapture::~LiveCapture() {
 bool LiveCapture::open(const std::string& iface_name, std::string& error) {
 #ifdef HAVE_LIBPCAP
     char errbuf[PCAP_ERRBUF_SIZE];
-    pcap_t* p = pcap_open_live(
-        iface_name.c_str(),
-        65535,     // snaplen
-        1,         // promiscuous
-        100,       // read timeout (ms)
-        errbuf);
-
+    pcap_t* p = pcap_create(iface_name.c_str(), errbuf);
     if (!p) {
-        error = "pcap_open_live(" + iface_name + ") failed: " + std::string(errbuf);
+        error = "pcap_create(" + iface_name + ") failed: " + std::string(errbuf);
+        return false;
+    }
+
+    // Configure before activate so the capture buffer is settable.
+    if (pcap_set_snaplen(p, 65535) != 0) {
+        error = "pcap_set_snaplen failed on " + iface_name;
+        pcap_close(p);
+        return false;
+    }
+    if (pcap_set_promisc(p, 1) != 0) {  // Promiscuous: see traffic not addressed to us
+        error = "pcap_set_promisc failed on " + iface_name;
+        pcap_close(p);
+        return false;
+    }
+    pcap_set_timeout(p, 100);        // read timeout (ms)
+    pcap_set_buffer_size(p, static_cast<int>(buffer_size_));
+
+    if (pcap_activate(p) != 0) {
+        error = "pcap_activate(" + iface_name + ") failed: " +
+                std::string(pcap_geterr(p)) +
+                " (needs admin/root for raw socket access; on Windows install Npcap)";
+        pcap_close(p);
         return false;
     }
 
@@ -81,7 +97,8 @@ bool LiveCapture::open(const std::string& iface_name, std::string& error) {
     return true;
 #else
     error = "Live capture requires libpcap. Rebuild with -Dlive_capture=true "
-            "(Linux: install libpcap-dev; Windows: Npcap SDK).";
+            "(Linux: install libpcap-dev and run as root/CAP_NET_RAW; "
+            "Windows: Npcap driver + SDK).";
     (void)iface_name;
     return false;
 #endif
@@ -126,6 +143,26 @@ const PacketAnalyzer::PcapGlobalHeader* LiveCapture::globalHeader() const {
     }
 #endif
     return nullptr;
+}
+
+bool LiveCapture::captureStats(CaptureStats& out) const {
+#ifdef HAVE_LIBPCAP
+    if (!handle_) {
+        return false;
+    }
+    struct pcap_stat ps;
+    if (pcap_stats(static_cast<pcap_t*>(handle_), &ps) != 0) {
+        return false;
+    }
+    out.received = static_cast<uint64_t>(ps.ps_recv);
+    out.dropped = static_cast<uint64_t>(ps.ps_drop);
+    out.if_dropped = static_cast<uint64_t>(ps.ps_ifdrop);
+    out.available = true;
+    return true;
+#else
+    (void)out;
+    return false;
+#endif
 }
 
 std::vector<std::string> LiveCapture::listInterfaces() {

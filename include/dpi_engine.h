@@ -82,6 +82,11 @@ public:
         bool enable_ipc = false;
         std::string ipc_host = "127.0.0.1";
         uint16_t ipc_port = 9000;
+
+        // Live capture tuning (bytes; 0 = LiveCapture default of 2 MiB).
+        uint32_t pcap_buffer_bytes = 0;
+        // Auto-stop live capture after N seconds (0 = run until Ctrl+C).
+        uint32_t duration_sec = 0;
     };
     
     DPIEngine(const Config& config);
@@ -198,6 +203,10 @@ private:
     
     // Statistics
     DPIStats stats_;
+
+    // Capture source currently backed by runCapture(); used by
+    // generateReport() to surface capture-layer drop statistics.
+    CaptureSource* active_source_{nullptr};
     
     // Control
     std::atomic<bool> running_{false};

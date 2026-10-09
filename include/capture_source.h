@@ -9,6 +9,15 @@
 
 namespace DPI {
 
+// Live capture accounting from the underlying capture library
+// (pcap_stats()). Kept optional so file sources report availability=false.
+struct CaptureStats {
+    uint64_t received = 0;      // packets received by the capture layer
+    uint64_t dropped = 0;       // packets dropped by the capture layer (buffer full)
+    uint64_t if_dropped = 0;    // packets dropped by the interface
+    bool available = false;
+};
+
 // A single raw packet handed from a capture source to the DPI pipeline.
 // Mirrors PacketAnalyzer::RawPacket so parsing stays identical for
 // file and live sources.
@@ -43,6 +52,13 @@ public:
     virtual bool isLive() const = 0;
     virtual const std::string& name() const = 0;
 
+    // Optional capture-layer accounting (drops under load). Returns false
+    // for sources without capture-level stats (e.g. file replay).
+    virtual bool captureStats(CaptureStats& out) const {
+        (void)out;
+        return false;
+    }
+
     // Global header to write to an output pcap (nullptr if none).
     virtual const PacketAnalyzer::PcapGlobalHeader* globalHeader() const {
         return nullptr;
@@ -76,6 +92,11 @@ public:
     bool isLive() const override { return true; }
     const std::string& name() const override { return name_; }
     const PacketAnalyzer::PcapGlobalHeader* globalHeader() const override;
+    bool captureStats(CaptureStats& out) const override;
+
+    // Set the kernel/BPF capture buffer size (bytes). Must be called before
+    // open(); default is 2 MiB. Larger buffers reduce drops under load.
+    void setBufferSize(uint32_t bytes) { buffer_size_ = bytes; }
 
     // List names of available capture interfaces (empty if unavailable).
     static std::vector<std::string> listInterfaces();
@@ -85,6 +106,7 @@ private:
     std::string name_;
     PacketAnalyzer::PcapGlobalHeader global_header_;
     bool fatal_error_ = false;
+    uint32_t buffer_size_ = 2u * 1024u * 1024u;  // 2 MiB default BPF buffer
 };
 
 } // namespace DPI
