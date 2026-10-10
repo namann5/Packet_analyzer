@@ -240,18 +240,21 @@ bool DPIEngine::processFile(const std::string& input_file,
     return runCapture(source, output_file);
 }
 
-bool DPIEngine::processLive(const std::string& interface,
+bool DPIEngine::processLive(const std::string& iface_name,
                             const std::string& output_file) {
     
-    std::cout << "\n[DPIEngine] Live capture on interface: " << interface << "\n";
+    std::cout << "\n[DPIEngine] Live capture on interface: " << iface_name << "\n";
     if (!output_file.empty()) {
         std::cout << "[DPIEngine] Output to:  " << output_file << "\n";
     }
     std::cout << "[DPIEngine] Press Ctrl+C to stop.\n\n";
     
     LiveCapture source;
+    if (config_.pcap_buffer_bytes != 0) {
+        source.setBufferSize(config_.pcap_buffer_bytes);
+    }
     std::string error;
-    if (!source.open(interface, error)) {
+    if (!source.open(iface_name, error)) {
         std::cerr << "[DPIEngine] Error: " << error << "\n";
         return false;
     }
@@ -283,15 +286,25 @@ bool DPIEngine::runCapture(CaptureSource& source,
     // Start processing threads
     start();
     stop_capture_ = false;
-    
+    active_source_ = &source;
+
     // Start reader thread against the capture source
     reader_finished_ = false;
     reader_thread_ = std::thread(&DPIEngine::readerThreadLoop, this, &source);
-    
+
     if (source.isLive()) {
-        // Live mode: run until stopCapture() is requested (Ctrl+C) or the
-        // reader ends (fatal capture error).
+        // Live mode: run until stopCapture() is requested (Ctrl+C), the
+        // reader ends (fatal capture error), or --duration elapses.
+        auto start_time = std::chrono::steady_clock::now();
         while (!stop_capture_.load() && !reader_finished_.load()) {
+            if (config_.duration_sec > 0) {
+                auto elapsed = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - start_time).count();
+                if (elapsed >= static_cast<double>(config_.duration_sec)) {
+                    stop_capture_ = true;
+                    break;
+                }
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         // The reader thread sees the stop flag and finishes; join it.
@@ -309,6 +322,9 @@ bool DPIEngine::runCapture(CaptureSource& source,
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         processing_complete_ = true;
     }
+
+    // active_source_ stays valid until runCapture() returns, so that the
+    // post-capture report can surface capture-layer drop statistics.
     
     // Stop all threads
     stop();
@@ -597,6 +613,26 @@ std::string DPIEngine::generateReport() const {
     if (stats_.total_packets > 0) {
         double drop_rate = 100.0 * stats_.dropped_packets.load() / stats_.total_packets.load();
         ss << "║   Drop Rate:          " << std::setw(11) << std::fixed << std::setprecision(2) << drop_rate << "%                        ║\n";
+    }
+
+    // Capture-layer accounting (live only): packets/drops surfaced by the
+    // capture library (pcap_stats). The benchmark angle: our multi-threaded
+    // pipeline must keep capture-layer drops near zero under load.
+    if (active_source_ && active_source_->isLive()) {
+        CaptureStats cstats;
+        if (active_source_->captureStats(cstats)) {
+            ss << "╠══════════════════════════════════════════════════════════════╣\n";
+            ss << "║ CAPTURE STATISTICS (pcap)                                    ║\n";
+            ss << "║   Received:          " << std::setw(12) << cstats.received << "                        ║\n";
+            ss << "║   Dropped:           " << std::setw(12) << cstats.dropped << "                        ║\n";
+            ss << "║   If-Dropped:        " << std::setw(12) << cstats.if_dropped << "                        ║\n";
+            if (cstats.received > 0) {
+                double cap_drop_pct = 100.0 * cstats.dropped /
+                                      static_cast<double>(cstats.received);
+                ss << "║   Buffer Drop Rate:   " << std::setw(11) << std::fixed
+                   << std::setprecision(2) << cap_drop_pct << "%                        ║\n";
+            }
+        }
     }
     
     if (lb_manager_) {

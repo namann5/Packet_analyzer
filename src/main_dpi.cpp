@@ -45,6 +45,8 @@ Options:
   --ipc-host <host>       Dashboard IPC host (default: 127.0.0.1)
   --ipc-port <port>       Dashboard IPC port (default: 9000)
   -o <file>               Output PCAP for forwarded traffic (live mode)
+  --pcap-buffer <MiB>     Capture buffer size in MiB (default: 2; larger = fewer drops under load)
+  --duration <sec>        Auto-stop live capture after N seconds (default: run until Ctrl+C)
   --lbs <n>               Number of load balancer threads (default: 2)
   --fps <n>               FP threads per LB (default: 2)
   -l, --list-interfaces   List available capture interfaces and exit
@@ -241,6 +243,20 @@ int main(int argc, char* argv[]) {
             config.syn_flood_threshold = static_cast<size_t>(v);
         } else if (arg == "--events-out" && i + 1 < argc) {
             config.events_output_file = argv[++i];
+        } else if (arg == "--pcap-buffer" && i + 1 < argc) {
+            unsigned long v = 0;
+            if (!parseULong(argv[++i], v) || v == 0) {
+                std::cerr << "Invalid value for --pcap-buffer (MiB, must be > 0): " << argv[i] << "\n";
+                return 1;
+            }
+            config.pcap_buffer_bytes = static_cast<uint32_t>(v) * 1024u * 1024u;
+        } else if (arg == "--duration" && i + 1 < argc) {
+            unsigned long v = 0;
+            if (!parseULong(argv[++i], v) || v == 0) {
+                std::cerr << "Invalid value for --duration (seconds, must be > 0): " << argv[i] << "\n";
+                return 1;
+            }
+            config.duration_sec = static_cast<uint32_t>(v);
         } else if (arg == "--lbs" && i + 1 < argc) {
             int v = 0;
             if (!parseInt(argv[++i], v) || v <= 0) {
