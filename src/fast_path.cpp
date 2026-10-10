@@ -4,6 +4,20 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <chrono>
+
+namespace {
+
+double eventTimestamp(const DPI::PacketJob& job) {
+    if (!job.timestamp_valid && job.ts_sec == 0 && job.ts_usec == 0) {
+        return std::chrono::duration<double>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+    }
+    return static_cast<double>(job.ts_sec) +
+           static_cast<double>(job.ts_usec) / 1000000.0;
+}
+
+}
 
 namespace DPI {
 
@@ -93,23 +107,40 @@ void FastPathProcessor::run() {
 PacketAction FastPathProcessor::processPacket(PacketJob& job) {
     // Track B: Port Scan and SYN Flood Anomaly Detection
     if (anomaly_detector_ && anomaly_detector_->processPacket(job)) {
+        if (engine_stats_) {
+            engine_stats_->blocked_total++;
+        }
+        if (ipc_emitter_) {
+            ipc_emitter_->emitAppClassified(
+                job.tuple, appTypeToString(AppType::UNKNOWN), true, "ANOMALY", job.data.size());
+        }
         return PacketAction::DROP;
+    }
+
+    Connection* conn = conn_tracker_.getOrCreateConnection(job.tuple);
+    if (!conn) {
+        return PacketAction::FORWARD;
+    }
+
+    // Refresh activity before every security check, including already blocked
+    // flows, so active traffic is not evicted as stale state.
+    conn_tracker_.updateConnection(conn, job.data.size(), true);
+    if (conn->state == ConnectionState::BLOCKED) {
+        return PacketAction::DROP;
+    }
+    if (job.tuple.protocol == 6) {
+        updateTCPState(conn, job.tcp_flags);
     }
 
     // Track B: VPN Detection
     if (vpn_detector_) {
         auto vpn_res = vpn_detector_->detect(job);
         if (vpn_res.detected) {
-            Connection* conn = conn_tracker_.getOrCreateConnection(job.tuple);
-            if (conn) {
-                bool already_vpn = (conn->app_type == AppType::WIREGUARD ||
-                                    conn->app_type == AppType::OPENVPN ||
-                                    conn->app_type == AppType::IPSEC ||
-                                    conn->app_type == AppType::VPN_GENERIC);
+            bool already_vpn = conn->vpn_alerted;
 
                 // Classify + alert only on the first detection for this flow,
                 // so VPN_DETECTED is not re-emitted for every tunneled packet.
-                if (!already_vpn && conn->state != ConnectionState::BLOCKED) {
+                if (!already_vpn) {
                     AppType vpn_app = AppType::VPN_GENERIC;
                     switch (vpn_res.type) {
                         case VPNType::WIREGUARD: vpn_app = AppType::WIREGUARD; break;
@@ -120,7 +151,7 @@ PacketAction FastPathProcessor::processPacket(PacketJob& job) {
                     conn_tracker_.classifyConnection(conn, vpn_app, vpn_res.protocol_name);
 
                     SecurityAlert alert;
-                    alert.timestamp = job.ts_sec + static_cast<double>(job.ts_usec) / 1000000.0;
+                    alert.timestamp = eventTimestamp(job);
                     alert.alert_type = "VPN_DETECTED";
                     alert.tuple = job.tuple;
                     alert.app_or_domain = vpn_res.protocol_name;
@@ -128,38 +159,29 @@ PacketAction FastPathProcessor::processPacket(PacketJob& job) {
                     alert.reason = "VPN_DETECTED";
                     alert.detail = vpn_res.detail;
                     EventSink::instance().emitAlert(alert);
+                    conn->vpn_alerted = true;
                 }
 
                 if (vpn_detector_->shouldBlockVPN()) {
+                    bool newly_blocked = conn->state != ConnectionState::BLOCKED;
                     conn_tracker_.blockConnection(conn);
-                    if (engine_stats_) {
+                    if (newly_blocked && engine_stats_) {
                         engine_stats_->blocked_by_vpn++;
                     }
+                    // The first blocked VPN alert already accounts for the
+                    // aggregate counter in EventSink. A live policy change
+                    // can block an already-alerted flow, so account for that
+                    // transition here only when no blocked alert was emitted.
+                    if (newly_blocked && already_vpn && engine_stats_) {
+                        engine_stats_->blocked_total++;
+                    }
+                    if (newly_blocked && already_vpn && ipc_emitter_) {
+                        ipc_emitter_->emitAppClassified(
+                            job.tuple, "VPN", true, "VPN_DETECTED", job.data.size());
+                    }
                     return PacketAction::DROP;
-                }
             }
         }
-    }
-
-    // Get or create connection
-    Connection* conn = conn_tracker_.getOrCreateConnection(job.tuple);
-    if (!conn) {
-        // Should not happen, but handle gracefully
-        return PacketAction::FORWARD;
-    }
-    
-    // Update connection stats
-    bool is_outbound = true;  // In this model, all packets from user are outbound
-    conn_tracker_.updateConnection(conn, job.data.size(), is_outbound);
-    
-    // Update TCP state if applicable
-    if (job.tuple.protocol == 6) {  // TCP
-        updateTCPState(conn, job.tcp_flags);
-    }
-    
-    // If connection is already blocked, drop immediately
-    if (conn->state == ConnectionState::BLOCKED) {
-        return PacketAction::DROP;
     }
 
     bool was_classified = (conn->state == ConnectionState::CLASSIFIED);
@@ -202,8 +224,6 @@ void FastPathProcessor::inspectPayload(PacketJob& job, Connection* conn) {
         return;
     }
     
-    const uint8_t* payload = job.data.data() + job.payload_offset;
-    
     // Try TLS SNI extraction first (most common for HTTPS)
     if (tryExtractSNI(job, conn)) {
         return;
@@ -245,23 +265,25 @@ void FastPathProcessor::inspectDNSPayload(PacketJob& job, Connection* conn) {
     }
 
     // Track B: Malicious Domain Blocklist (URLhaus)
-    if (blocklist_ && block_malicious_) {
+    if (blocklist_ && blocklist_->size() > 0) {
         std::string matched_rule;
-            if (blocklist_->isBlocked(*domain, &matched_rule)) {
+        if (blocklist_->isBlocked(*domain, &matched_rule)) {
+            if (block_malicious_) {
                 conn_tracker_.blockConnection(conn);
                 if (engine_stats_) {
                     engine_stats_->blocked_by_malicious++;
                 }
-                SecurityAlert alert;
-                alert.timestamp = job.ts_sec + static_cast<double>(job.ts_usec) / 1000000.0;
-                alert.alert_type = "MALICIOUS";
-                alert.tuple = job.tuple;
-                alert.app_or_domain = *domain;
-                alert.blocked = true;
-                alert.reason = "MALICIOUS";
-                alert.detail = "Matched URLhaus rule: " + matched_rule;
-                EventSink::instance().emitAlert(alert);
             }
+            SecurityAlert alert;
+            alert.timestamp = eventTimestamp(job);
+            alert.alert_type = "MALICIOUS";
+            alert.tuple = job.tuple;
+            alert.app_or_domain = *domain;
+            alert.blocked = block_malicious_;
+            alert.reason = "MALICIOUS";
+            alert.detail = "Matched URLhaus rule: " + matched_rule;
+            EventSink::instance().emitAlert(alert);
+        }
     }
 
     if (first_classification && engine_stats_) {
@@ -289,19 +311,21 @@ bool FastPathProcessor::tryExtractSNI(const PacketJob& job, Connection* conn) {
         conn_tracker_.classifyConnection(conn, app, *sni);
 
         // Track B: Malicious Domain Blocklist (URLhaus) on TLS SNI
-        if (blocklist_ && block_malicious_) {
+        if (blocklist_ && blocklist_->size() > 0) {
             std::string matched_rule;
             if (blocklist_->isBlocked(*sni, &matched_rule)) {
-                conn_tracker_.blockConnection(conn);
-                if (engine_stats_) {
-                    engine_stats_->blocked_by_malicious++;
+                if (block_malicious_) {
+                    conn_tracker_.blockConnection(conn);
+                    if (engine_stats_) {
+                        engine_stats_->blocked_by_malicious++;
+                    }
                 }
                 SecurityAlert alert;
-                alert.timestamp = job.ts_sec + static_cast<double>(job.ts_usec) / 1000000.0;
+                alert.timestamp = eventTimestamp(job);
                 alert.alert_type = "MALICIOUS";
                 alert.tuple = job.tuple;
                 alert.app_or_domain = *sni;
-                alert.blocked = true;
+                alert.blocked = block_malicious_;
                 alert.reason = "MALICIOUS";
                 alert.detail = "Matched URLhaus rule: " + matched_rule;
                 EventSink::instance().emitAlert(alert);
@@ -336,19 +360,21 @@ bool FastPathProcessor::tryExtractHTTPHost(const PacketJob& job, Connection* con
         conn_tracker_.classifyConnection(conn, app, *host);
 
         // Track B: Malicious Domain Blocklist (URLhaus) on HTTP Host
-        if (blocklist_ && block_malicious_) {
+        if (blocklist_ && blocklist_->size() > 0) {
             std::string matched_rule;
             if (blocklist_->isBlocked(*host, &matched_rule)) {
-                conn_tracker_.blockConnection(conn);
-                if (engine_stats_) {
-                    engine_stats_->blocked_by_malicious++;
+                if (block_malicious_) {
+                    conn_tracker_.blockConnection(conn);
+                    if (engine_stats_) {
+                        engine_stats_->blocked_by_malicious++;
+                    }
                 }
                 SecurityAlert alert;
-                alert.timestamp = job.ts_sec + static_cast<double>(job.ts_usec) / 1000000.0;
+                alert.timestamp = eventTimestamp(job);
                 alert.alert_type = "MALICIOUS";
                 alert.tuple = job.tuple;
                 alert.app_or_domain = *host;
-                alert.blocked = true;
+                alert.blocked = block_malicious_;
                 alert.reason = "MALICIOUS";
                 alert.detail = "Matched URLhaus rule: " + matched_rule;
                 EventSink::instance().emitAlert(alert);

@@ -1,5 +1,6 @@
 #include <csignal>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -119,6 +120,24 @@ bool parseInt(const std::string& str, int& out) {
     }
 }
 
+bool optionTakesValue(const std::string& arg) {
+    return arg == "--block-ip" || arg == "--block-app" || arg == "--block-domain" ||
+           arg == "--ipc-host" || arg == "--ipc-port" || arg == "--rules" ||
+           arg == "--urlhaus" || arg == "--vpn-ranges" ||
+           arg == "--port-scan-thresh" || arg == "--syn-flood-thresh" ||
+           arg == "--events-out" || arg == "--pcap-buffer" || arg == "--duration" ||
+           arg == "--lbs" || arg == "--fps" || arg == "-i" || arg == "--interface" ||
+           arg == "-o" || arg == "--output";
+}
+
+bool isKnownOption(const std::string& arg) {
+    return optionTakesValue(arg) || arg == "--export-stats" || arg == "--ipc" ||
+           arg == "--download-urlhaus" || arg == "--block-vpn" ||
+           arg == "--no-block-malicious" || arg == "--verbose" ||
+           arg == "--help" || arg == "-h" || arg == "-l" ||
+           arg == "--list-interfaces";
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -131,6 +150,11 @@ int main(int argc, char* argv[]) {
     // Parse the full argv once.
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
+        if (optionTakesValue(arg) &&
+            (i + 1 >= argc || isKnownOption(argv[i + 1]))) {
+            std::cerr << "Missing value for " << arg << "\n";
+            return 1;
+        }
         if (arg == "-l" || arg == "--list-interfaces") {
             list_only = true;
         } else if ((arg == "-i" || arg == "--interface") && i + 1 < argc) {
@@ -172,7 +196,7 @@ int main(int argc, char* argv[]) {
         }
         input_file = argv[1];
         opt_start = 2;
-        if (argc >= 3 && argv[2][0] != '-') {
+        if (argc >= 3 && (argv[2][0] != '-' || !isKnownOption(argv[2]))) {
             output_file = argv[2];
             opt_start = 3;
         }
@@ -229,15 +253,15 @@ int main(int argc, char* argv[]) {
             config.block_malicious = false;
         } else if (arg == "--port-scan-thresh" && i + 1 < argc) {
             unsigned long v = 0;
-            if (!parseULong(argv[++i], v)) {
-                std::cerr << "Invalid value for --port-scan-thresh: " << argv[i] << "\n";
+            if (!parseULong(argv[++i], v) || v == 0) {
+                std::cerr << "Invalid value for --port-scan-thresh (must be > 0): " << argv[i] << "\n";
                 return 1;
             }
             config.port_scan_threshold = static_cast<size_t>(v);
         } else if (arg == "--syn-flood-thresh" && i + 1 < argc) {
             unsigned long v = 0;
-            if (!parseULong(argv[++i], v)) {
-                std::cerr << "Invalid value for --syn-flood-thresh: " << argv[i] << "\n";
+            if (!parseULong(argv[++i], v) || v == 0) {
+                std::cerr << "Invalid value for --syn-flood-thresh (must be > 0): " << argv[i] << "\n";
                 return 1;
             }
             config.syn_flood_threshold = static_cast<size_t>(v);
@@ -245,14 +269,18 @@ int main(int argc, char* argv[]) {
             config.events_output_file = argv[++i];
         } else if (arg == "--pcap-buffer" && i + 1 < argc) {
             unsigned long v = 0;
-            if (!parseULong(argv[++i], v) || v == 0) {
+            constexpr unsigned long max_buffer_mib =
+                static_cast<unsigned long>(std::numeric_limits<int>::max()) /
+                (1024UL * 1024UL);
+            if (!parseULong(argv[++i], v) || v == 0 || v > max_buffer_mib) {
                 std::cerr << "Invalid value for --pcap-buffer (MiB, must be > 0): " << argv[i] << "\n";
                 return 1;
             }
-            config.pcap_buffer_bytes = static_cast<uint32_t>(v) * 1024u * 1024u;
+            config.pcap_buffer_bytes = static_cast<uint32_t>(v * 1024UL * 1024UL);
         } else if (arg == "--duration" && i + 1 < argc) {
             unsigned long v = 0;
-            if (!parseULong(argv[++i], v) || v == 0) {
+            if (!parseULong(argv[++i], v) || v == 0 ||
+                v > static_cast<unsigned long>(std::numeric_limits<uint32_t>::max())) {
                 std::cerr << "Invalid value for --duration (seconds, must be > 0): " << argv[i] << "\n";
                 return 1;
             }
@@ -276,6 +304,13 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--help" || arg == "-h") {
             printUsage(argv[0]);
             return 0;
+        } else if ((arg == "-i" || arg == "--interface" ||
+                    arg == "-o" || arg == "--output") && i + 1 < argc) {
+            ++i;
+        } else {
+            std::cerr << "Unknown option or missing value: " << arg << "\n";
+            printUsage(argv[0]);
+            return 1;
         }
     }
 

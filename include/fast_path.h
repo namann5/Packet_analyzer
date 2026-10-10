@@ -192,7 +192,7 @@ public:
     }
     
     // Get number of FPs
-    int getNumFPs() const { return fps_.size(); }
+    int getNumFPs() const { return static_cast<int>(fps_.size()); }
     
     // Get aggregated stats
     struct AggregatedStats {

@@ -1,4 +1,4 @@
-# Packet_analyzer ΓÇö Real-Time DPI System Project Plan
+# Packet_analyzer — Real-Time DPI System Project Plan
 
 **Status:** v1.2 - Tracks A (M1), B (M2+M3), C (M4) and M5 end-to-end delivered; live IPC + Windows Npcap capture verified
 **Lead:** Naman Singh (namann5)
@@ -8,12 +8,12 @@
 | Role | Contributor |
 |---|---|
 | **Lead** | Naman Singh ([@namann5](https://github.com/namann5)) |
-| Track A ΓÇö Capture + Rules | Naman Singh ([@namann5](https://github.com/namann5)) ΓÇö delivered, see ┬º5 |
-| Track B ΓÇö Security | Γ£à delivered (┬º6) |
-| Track C ΓÇö Dashboard | Delivered, see ┬º7 |
+| Track A — Capture + Rules | Naman Singh ([@namann5](https://github.com/namann5)) — delivered, see §5 |
+| Track B — Security | ✅ delivered (§6) |
+| Track C — Dashboard | Delivered, see §7 |
 **Target platform:** Cross-platform (Windows native + Linux / WSL)
 **Build system:** Meson
-**Baseline:** Existing C++17 DPI engine (~4,600 LOC) ΓÇö PCAP replay, SNI/Host extraction, thread-safe rule engine, multi-threaded fast-path. No external deps.
+**Baseline:** Existing C++17 DPI engine (~4,600 LOC) — PCAP replay, SNI/Host extraction, thread-safe rule engine, multi-threaded fast-path. No external deps.
 
 ---
 
@@ -23,7 +23,7 @@ Transform the existing offline, file-replay DPI engine into a **real-time deep p
 
 1. Captures live traffic via libpcap (no dependency on saved PCAP files)
 2. Maintains a **persistent (JSON/SQLite) rules engine** with a dedicated CLI
-3. Detects **security anomalies** ΓÇö port scans, SYN floods, DNS tunneling
+3. Detects **security anomalies** — port scans, SYN floods, DNS tunneling
 4. Matches traffic against a **public malicious-domain blocklist** (URLhaus)
 5. Streams live stats to a **Web dashboard** (FastAPI + WebSocket + Chart.js) with PDF/HTML report export
 6. **[Bonus]** Flags VPN/tunneled traffic via **protocol fingerprinting** + known VPN IP ranges
@@ -38,9 +38,9 @@ The plan is split so each block is independently demoable and can be handed to o
 
 | Track | Owner (TBD) | Scope | Independent demo |
 |---|---|---|---|
-| **A ΓÇö Capture + Rules** | Γ£à delivered (┬º5) | libpcap live capture, PCAPΓåölive abstraction, persistent JSON rules, rules CLI, Meson build | `dpi_engine -i eth0` classes real packets; CRUD rules; survive restart |
-| **B ΓÇö Security** | Γ£à delivered (┬º6) | Port scan, SYN flood, DNS tunneling detectors; URLhaus blocklist; VPN fingerprinting | Feed malicious pcap ΓåÆ detected & blocked; VPN traffic flagged `VPN_DETECTED` |
-| **C ΓÇö Dashboard** | Γ£à delivered (┬º7) | FastAPI + WebSocket + Chart.js, REST API, PDF/HTML reports, IPC bridge to C++ | Live-updating charts of blocked traffic, app breakdown, throughput; export report |
+| **A — Capture + Rules** | ✅ delivered (§5) | libpcap live capture, PCAP→live abstraction, persistent JSON rules, rules CLI, Meson build | `dpi_engine -i eth0` classes real packets; CRUD rules; survive restart |
+| **B — Security** | ✅ delivered (§6) | Port scan, SYN flood, DNS tunneling detectors; URLhaus blocklist; VPN fingerprinting | Feed malicious pcap → detected & blocked; VPN traffic flagged `VPN_DETECTED` |
+| **C — Dashboard** | ✅ delivered (§7) | FastAPI + WebSocket + Chart.js, REST API, PDF/HTML reports, IPC bridge to C++ | Live-updating charts of blocked traffic, app breakdown, throughput; export report |
 
 > Cross-cutting integration contract (below) must be agreed FIRST so tracks can proceed in parallel.
 
@@ -50,28 +50,28 @@ The plan is split so each block is independently demoable and can be handed to o
 
 - **Language:** C++17 (core), Python (only `generate_test_pcap.py`, `dashboard/` future)
 - **Build:** Meson (`meson.build` + `meson_options.txt`) is the build system; `CMakeLists.txt` is STALE and removed from consideration
-- **Reading:** `capture_source.h` abstraction ΓÇö `FileCapture` (existing `pcap_reader`) + **`LiveCapture` (libpcap, Linux; Windows builds without it)**
-- **Rules:** `RuleManager` ΓÇö IP / App / Domain / Port, thread-safe. **Now `std::mutex`-based** (winpthreads' `shared_mutex` rwlock caused an intermittent `__builtin_abort` in release builds under concurrent readers). New **persistent JSON `RulesStore` + `dpi_cli`** CRUD lives in `rules_store.*` / `dpi_cli.cpp`
-- **Concurrency:** LB ΓåÆ FP fast-path threads, connection tracking, thread-safe queues
+- **Reading:** `capture_source.h` abstraction — `FileCapture` (existing `pcap_reader`) + **`LiveCapture` (libpcap, Linux; Windows builds without it)**
+- **Rules:** `RuleManager` — IP / App / Domain / Port, thread-safe. **Now `std::mutex`-based** (winpthreads' `shared_mutex` rwlock caused an intermittent `__builtin_abort` in release builds under concurrent readers). New **persistent JSON `RulesStore` + `dpi_cli`** CRUD lives in `rules_store.*` / `dpi_cli.cpp`
+- **Concurrency:** LB → FP fast-path threads, connection tracking, thread-safe queues
 - **Engine impl:** modular `include/` + `src/` (`main_dpi.cpp`) is the build target; legacy `src/main_working.cpp`, `src/main_simple.cpp`, `src/main.cpp`, `src/dpi_mt.cpp` remain as historical/desktop-only variants (not built by Meson)
-- **Tests:** Meson `test()` harness ΓÇö `engine_smoke` (replay 77-pkt `test_dpi.pcap` with `--block-app YouTube`) + `rules_cli_persistence`. CI runs these on **Linux, macOS, Windows (MSVC+GCC)**, plus a **Linux live-capture** job and a Python syntax-check job ΓÇö all green
+- **Tests:** Meson `test()` harness — `engine_smoke` (replay 77-pkt `test_dpi.pcap` with `--block-app YouTube`) + `rules_cli_persistence`. CI runs these on **Linux, macOS, Windows (MSVC+GCC)**, plus a **Linux live-capture** job and a Python syntax-check job — all green
 - **Known bugs fixed:** LoadBalancer init-order OOB (`per_fp_counts_` sized from moved-from vector); meson `disabler()` silently dropping target+tests; engine_smoke relied on CWD so it failed under `meson test`
 
 ---
 
-## 4. Integration Contract (do this FIRST ΓÇö parallel tracks depend on it)
+## 4. Integration Contract (do this FIRST — parallel tracks depend on it)
 
 Read as the "API" the three tracks agree on.
 
 ### 4.1 Technology stack decisions
 - **Build:** Meson, `meson_options.txt` for platform toggles (Linux libpcap vs Windows Npcap)
-- **IPC:** C++ engine ΓåÆ Python dashboard over a **localhost WebSocket/JSON socket** (simple, cross-platform, no shared-memory quirks). Fallback: named pipe.
+- **IPC:** C++ engine → Python dashboard over a **localhost WebSocket/JSON socket** (simple, cross-platform, no shared-memory quirks). Fallback: named pipe.
 - **JSON rules:** `nlohmann/json` (single-header, easy vendoring) or stdlib-light hand-rolled writer. Recommend **nlohmann/json**.
-- **SQLite:** `sqlite3` C API (bundle sqlite3.c amalgamation ΓÇö zero-install, cross-platform).
+- **SQLite:** `sqlite3` C API (bundle sqlite3.c amalgamation — zero-install, cross-platform).
 - **Dashboard deps:** FastAPI + `uvicorn` + `websockets`, frontend Chart.js (CDN), report via `reportlab` (PDF) + plain HTML.
 
 ### 4.2 Event / stats JSON schema (shared)
-Every packet ΓåÆ classification ΓåÆ emits zero or more events; aggregated counters feed the dashboard.
+Every packet → classification → emits zero or more events; aggregated counters feed the dashboard.
 
 ```jsonc
 // Per-connection classified event (pushed to dashboard IP socket)
@@ -109,29 +109,29 @@ Every packet ΓåÆ classification ΓåÆ emits zero or more events; aggregated 
 ```
 
 ### 4.4 Interface boundaries (who owns what)
-- **A owns:** `pcap_reader.*` ΓåÆ `live_capture.*`; `rule_manager.*` ΓåÆ `rules_store.*` (JSON+SQLite); `dpi_cli.*`; `meson.build`
+- **A owns:** `pcap_reader.*` → `live_capture.*`; `rule_manager.*` → `rules_store.*` (JSON+SQLite); `dpi_cli.*`; `meson.build`
 - **B owns:** `anomaly_detector.*`, `blocklist.*`, `vpn_detector.*` (hooks inserted into FP classification path)
 - **C owns:** everything under `dashboard/` (Python + static frontend), the IPC server, report export
 - **Shared:** `events.h` (schema constants), `stats.h` (aggregator)
 
 ---
 
-## 5. Track A ΓÇö Live Capture + Persistent Rules Engine
+## 5. Track A — Live Capture + Persistent Rules Engine
 
-**Status: Γ£à DELIVERED (M1 gate met)** ΓÇö live capture classifies real packets; rules CRUD persists across restarts; CI green.
+**Status: ✅ DELIVERED (M1 gate met)** — live capture classifies real packets; rules CRUD persists across restarts; CI green.
 
-### 5.1 Live capture (libpcap) Γ£à
+### 5.1 Live capture (libpcap) ✅
 - `include/capture_source.h` + `src/capture_source.cpp`
-- Abstraction: `CaptureSource` interface with two impls ΓÇö `FileCapture` (existing reader) and `LiveCapture` (libpcap)
+- Abstraction: `CaptureSource` interface with two impls — `FileCapture` (existing reader) and `LiveCapture` (libpcap)
 - `LiveCapture::open(interface, snaplen=65535, promisc, timeout_ms)`; `-l` lists interfaces
 - Callback style: the SAME per-packet extract path handles file and live packets (`CapturePacket` mirrors `RawPacket`)
-- **Platform:** Linux ΓåÆ `pcap_open_live`+`pcap_next_ex`; Windows ΓåÆ optional Npcap link. Meson toggles via `live_capture` option + `HAVE_LIBPCAP`
+- **Platform:** Linux → `pcap_open_live`+`pcap_next_ex`; Windows → optional Npcap link. Meson toggles via `live_capture` option + `HAVE_LIBPCAP`
 - CLI: `dpi_engine -i eth0 [-o live.pcap] [--rules rules.json]`; Ctrl+C graceful stop
 
-### 5.2 Persistent rules (JSON) Γ£à ΓÇö SQLite deferred to backlog
+### 5.2 Persistent rules (JSON) ✅ — SQLite deferred to backlog
 - Upgrade `RuleManager` backend:
-  - Implemented: **JSON store** (`rules_store.*`) ΓÇö portable, zero-install, survives restart
-  - Backlog: **SQLite** table `rules(id, type, value, enabled, created_at, note)` (was ┬º5.2 primary; JSON chosen first for zero-dependency portability)
+  - Implemented: **JSON store** (`rules_store.*`) — portable, zero-install, survives restart
+  - Backlog: **SQLite** table `rules(id, type, value, enabled, created_at, note)` (was §5.2 primary; JSON chosen first for zero-dependency portability)
 - **CLI** `dpi_cli` (`src/dpi_cli.cpp`), commands all implemented:
   - `dpi_cli add-rule --type ip|app|domain|port --value 1.2.3.4 [--note "..." ] [--disabled]`
   - `dpi_cli del-rule <id>`
@@ -139,39 +139,39 @@ Every packet ΓåÆ classification ΓåÆ emits zero or more events; aggregated 
   - `dpi_cli import rules.json` / `export out.json`
   - `dpi_cli enable <id>` / `disable <id>` / `clear`
   - `--store <file>` for all (default `rules.json`)
-- Engine loads `--rules rules.json` at startup; `RulesStore::applyTo(RuleManager&)` maps AppType names ΓåÆ enum
+- Engine loads `--rules rules.json` at startup; `RulesStore::applyTo(RuleManager&)` maps AppType names → enum
 
-### 5.3 Deliverables / demo ΓÇö Γ£à VERIFIED
+### 5.3 Deliverables / demo — ✅ VERIFIED
 - `meson setup build && meson compile -C build`
-- `dpi_engine -i <interface> --rules rules.json` ΓåÆ live classification
+- `dpi_engine -i <interface> --rules rules.json` → live classification
 - CLI rule CRUD that survives a restart (persistence proven by `rules_cli_persistence` test)
 
 ---
 
-## 6. Track B ΓÇö Anomaly Detection + Blocklist + VPN
+## 6. Track B — Anomaly Detection + Blocklist + VPN
 
 ### 6.1 Port scan detector (`anomaly_detector.*`)
 - Sliding time window (e.g., 5 s); per `src_ip` count **unique destination ports**
-- Threshold breach (e.g., > 15 distinct ports to one target in window) ΓåÆ `PORT_SCAN` event
+- Threshold breach (e.g., > 15 distinct ports to one target in window) → `PORT_SCAN` event
 - Lightweight map, LRU eviction; runs inside or beside fast-path
 
 ### 6.2 SYN flood detector
 - Per `dst_ip` count **SYN-only** packets (no ACK, no payload) in window
-- Rate above threshold (e.g., > 500 SYN/s) ΓåÆ `SYN_FLOOD` event
+- Rate above threshold (e.g., > 500 SYN/s) → `SYN_FLOOD` event
 
 ### 6.3 DNS tunneling heuristics
 - For each DNS query (`DNSExtractor` output): compute
-  - subdomain depth (labels ΓêÆ 1)
+  - subdomain depth (labels ≥ 1)
   - total query name length and per-label length
   - Shannon entropy of the leftmost label
-- Heuristic: depth ΓëÑ 4 AND (long label ~> 20 chars OR entropy ~> 4.0) ΓåÆ `DNS_TUNNEL`
+- Heuristic: depth ≥ 4 AND (long label ~> 20 chars OR entropy ~> 4.0) → `DNS_TUNNEL`
 - Track per `(src_ip, query pattern)` to suppress noise, report unique tunnel domains
 
 ### 6.4 Malicious domain blocklist (URLhaus)
 - Download `https://urlhaus.abuse.ch/downloads/text/` (URLhaus online blocklist) on-demand
 - Parse into an in-memory **trie / set** of domains; optional refresh interval
 - Match against extracted DNS queries and TLS SNIs
-- On match ΓåÆ block, reason = `MALICIOUS`, emit event (feeds dashboard "blocked by blocklist")
+- On match → block, reason = `MALICIOUS`, emit event (feeds dashboard "blocked by blocklist")
 - Fallback offline: ship a small bundled sample list if no network
 
 ### 6.5 [Bonus] VPN / tunneled traffic detection (`vpn_detector.*`)
@@ -180,41 +180,41 @@ Protocol fingerprinting:
 - **OpenVPN:** TCP or UDP port 1194 + characteristic packet opcodes (`P_CONTROL_HARD_RESET_CLIENT_V1` = 0x38, tls-auth HMAC)
 - **IPSec:** IP protocol 50 (ESP) / 51 (AH) in `packet_parser`
 - **Known VPN IP ranges:** static config/CIDR list (`vpn_ranges.json`), match `src_ip`/`dst_ip`
-Match ΓåÆ label connection `VPN_DETECTED`; optionally blockable; surfaced in dashboard
+Match → label connection `VPN_DETECTED`; optionally blockable; surfaced in dashboard
 
 ### 6.6 Deliverables / demo
-- Crafted / malicious pcap ΓåÆ detectors fire + auto-block; `dpi_engine` console shows alerts
-- Live with URLhaus fetched ΓåÆ known-bad domain blocked & shown
+- Crafted / malicious pcap → detectors fire + auto-block; `dpi_engine` console shows alerts
+- Live with URLhaus fetched → known-bad domain blocked & shown
 
 ---
 
-## 7. Track C ΓÇö Web Dashboard + Reports
+## 7. Track C — Web Dashboard + Reports
 
-**Status: Γ£à DELIVERED (M4 gate met)** ΓÇö WebSocket streaming, live charts, live connection inspector, REST API, and PDF/HTML report export verified.
+**Status: ✅ DELIVERED (M4 gate met)** — WebSocket streaming, live charts, live connection inspector, REST API, and PDF/HTML report export verified.
 
-### 7.1 Backend (FastAPI) ΓÇö `dashboard/`
-- `dashboard/server.py` ΓÇö FastAPI app
-- **IPC bridge:** connects to C++ engine socket, receives event/stats JSON (contract ┬º4)
+### 7.1 Backend (FastAPI) — `dashboard/`
+- `dashboard/server.py` — FastAPI app
+- **IPC bridge:** connects to C++ engine socket, receives event/stats JSON (contract §4)
 - **REST endpoints:**
-  - `GET /api/stats` ΓåÆ aggregated stats
-  - `GET /api/connections` ΓåÆ recent classified connections (ring buffer)
-  - `GET /api/blocked` ΓåÆ blocked list w/ reasons
-  - `GET /api/events` ΓåÆ recent anomaly/alerts
-- **WebSocket:** `WS /ws` ΓåÆ pushes live updates (app breakdown, blocked, throughput)
+  - `GET /api/stats` → aggregated stats
+  - `GET /api/connections` → recent classified connections (ring buffer)
+  - `GET /api/blocked` → blocked list w/ reasons
+  - `GET /api/events` → recent anomaly/alerts
+- **WebSocket:** `WS /ws` → pushes live updates (app breakdown, blocked, throughput)
 
-### 7.2 Frontend ΓÇö `dashboard/static/`
+### 7.2 Frontend — `dashboard/static/`
 - `index.html` + `app.js` + Chart.js (CDN)
 - Panels: live throughput line, app-donut, blocked-by-reason bar, alert feed, top talkers
 - Updates via WebSocket; small sparkline for trend
 
-### 7.3 Reports ΓÇö export
+### 7.3 Reports — export
 - **HTML:** server-rendered snapshot of current stats/table (fast, offline)
-- **PDF:** `reportlab` ΓÇö same content paginated
+- **PDF:** `reportlab` — same content paginated
 - Trigger: `GET /api/report?format=pdf|html`
 
 ### 7.4 Deliverables / demo
 - Standalone demo with C++ engine run in `--export-stats` mode (no live nic) feeding fake/recorded stream
-- Live: charts update in real time ΓåÆ export HTML/PDF report
+- Live: charts update in real time → export HTML/PDF report
 
 ---
 
@@ -222,33 +222,33 @@ Match ΓåÆ label connection `VPN_DETECTED`; optionally blockable; surfaced in 
 
 | # | Milestone | Tracks | Gate |
 |---|---|---|---|
-| M0 | Integration contract + Meson skeleton + build green | A, B, C | Γ£à Done ΓÇö `meson compile` succeeds; baseline engine still runs; 3-OS CI + live-capture job green |
-| M1 | Live capture + JSON/SQLite rules + CLI | A | Γ£à Done ΓÇö live capture classifies; rules survive restart (JSON store; SQLite backlog) |
-| M2 | Anomaly detectors + VPN fingerprint (offline data) | B | Γ£à Done ΓÇö Crafted pcap triggers all 3 + VPN flag |
-| M3 | URLhaus blocklist + auto-block | B | Γ£à Done ΓÇö Known-bad domain blocked on live/offline stream |
-| M4 | Dashboard backend + WS streaming (fake feed) | C | Γ£à Done ΓÇö Charts move, live connection inspector, REST & PDF/HTML reports verified |
-| M5 | End-to-end: live capture ΓåÆ security ΓåÆ dashboard ΓåÆ report | A+B+C | Full demo |
+| M0 | Integration contract + Meson skeleton + build green | A, B, C | ✅ Done — `meson compile` succeeds; baseline engine still runs; 3-OS CI + live-capture job green |
+| M1 | Live capture + JSON/SQLite rules + CLI | A | ✅ Done — live capture classifies; rules survive restart (JSON store; SQLite backlog) |
+| M2 | Anomaly detectors + VPN fingerprint (offline data) | B | ✅ Done — Crafted pcap triggers all 3 + VPN flag |
+| M3 | URLhaus blocklist + auto-block | B | ✅ Done — Known-bad domain blocked on live/offline stream |
+| M4 | Dashboard backend + WS streaming (fake feed) | C | ✅ Done — Charts move, live connection inspector, REST & PDF/HTML reports verified |
+| M5 | End-to-end: live capture → security → dashboard → report | A+B+C | Full demo |
 
 ---
 
 ## 9. Risks / Decisions to Lock
 
-1. **Decide the engine implementation to build on** ΓÇö modular (`include/`+`src/`) recommended; `dpi_mt.cpp` is self-contained and harder to extend into. **Must resolve before Track B hooks in.**
+1. **Decide the engine implementation to build on** — modular (`include/`+`src/`) recommended; `dpi_mt.cpp` is self-contained and harder to extend into. **Must resolve before Track B hooks in.**
 2. **libpcap on Windows** requires **Npcap** runtime; CI must install it. Linux is trivial.
-3. **IPSec (protocol 50/51)** ΓÇö TCP/UDP fast-path has no stream for ESP/AH payload inspection; only header flagging possible (that's enough for `VPN_DETECTED`).
-4. **SQLite/JSON dependency** ΓÇö bundle `sqlite3.c` + nlohmann single headers to keep zero-install ambition; flag if you prefer system packages.
-5. **Dashboard wiring for demos without root/nic** ΓÇö always support `--export-stats`/replay feed so a nic is not mandatory.
-6. **Blocklist refresh** ΓÇö offline fallback list must ship; guard against stale/too-aggressive matching.
+3. **IPSec (protocol 50/51)** — TCP/UDP fast-path has no stream for ESP/AH payload inspection; only header flagging possible (that's enough for `VPN_DETECTED`).
+4. **SQLite/JSON dependency** — bundle `sqlite3.c` + nlohmann single headers to keep zero-install ambition; flag if you prefer system packages.
+5. **Dashboard wiring for demos without root/nic** — always support `--export-stats`/replay feed so a nic is not mandatory.
+6. **Blocklist refresh** — offline fallback list must ship; guard against stale/too-aggressive matching.
 
 ---
 
 ## 10. Getting Started (leader checklist)
 
-- [x] Stand up Meson skeleton (M0) ΓÇö build + CI green (all OS + live capture)
-- [x] Resolve engine baseline: modular `include/`+`src/` (┬º9.1)
-- [x] Approve integration contract (┬º4) ΓÇö schema + IPC + tech stack
-- [x] Track A delivered ΓÇö live capture + JSON rules CLI (M1)
-- [ ] Assign B / C owners (┬º2)
-- [ ] Unblock Track B with its demo criteria (┬º6.6)
-- [x] Unblock Track C with its demo criteria (┬º7.4)
-- [ ] Decide SQLite backend for rules (backlog, ┬º5.2)
+- [x] Stand up Meson skeleton (M0) — build + CI green (all OS + live capture)
+- [x] Resolve engine baseline: modular `include/`+`src/` (§9.1)
+- [x] Approve integration contract (§4) — schema + IPC + tech stack
+- [x] Track A delivered — live capture + JSON rules CLI (M1)
+- [ ] Assign B / C owners (§2)
+- [ ] Unblock Track B with its demo criteria (§6.6)
+- [x] Unblock Track C with its demo criteria (§7.4)
+- [ ] Decide SQLite backend for rules (backlog, §5.2)

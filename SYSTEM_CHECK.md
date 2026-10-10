@@ -1,7 +1,7 @@
 # System Verification & Basic Checks Record
 
-**Generated:** 2026-10-08 05:57:47 UTC  
-**Base Revision:** `1577c02` on branch `pr-7` (checks ran against this revision plus the working tree; this record is not part of the revision it describes)  
+**Generated:** 2026-10-10 09:20:02 UTC  
+**Base Revision:** `940c9ff` on branch `pr-8` (checks ran against this revision plus the working tree; this record is not part of the revision it describes)  
 **Repository State:** Clean (0 tracked modifications)  
 
 ---
@@ -26,7 +26,7 @@
 | **origin** | `https://github.com/namann5/Packet_analyzer.git` |
 | **upstream** | `error: No such remote 'upstream'` |
 
-- **Current Branch:** `pr-7`
+- **Current Branch:** `pr-8`
 - **Working Tree:** Clean (0 tracked modifications)
 - **Baseline Alignment:** Not verified by this script (compare against `upstream/main` manually)
 
@@ -58,21 +58,21 @@ A `WARN` means the installed version is missing a declared bound or falls outsid
 | **C++ Engine Headers** | All 12 modular headers present in `include/` | PASS |
 | **Dashboard Web UI Assets** | `index.html` and `app.js` present in `dashboard/static/` | PASS |
 | **Synthetic PCAP Generator** | `generate_test_pcap.py` executes successfully | PASS |
-| **Dashboard Test Suite** | 16 automated tests in `dashboard/test_dashboard.py` | PASS |
+| **Dashboard Test Suite** | 17 automated tests in `dashboard/test_dashboard.py` | PASS |
 
 ---
 
 ## 5. Test Suite Execution Summary
 
 ```text
-................                                                         [100%]
+.................                                                        [100%]
 ============================== warnings summary ===============================
 ..\..\..\AppData\Local\Programs\Python\Python310\lib\site-packages\fastapi\testclient.py:1
   C:\Users\evilt\AppData\Local\Programs\Python\Python310\lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
     from starlette.testclient import TestClient as TestClient  # noqa
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-16 passed, 1 warning in 0.96s
+17 passed, 1 warning in 0.67s
 ```
 
 ---

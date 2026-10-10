@@ -123,7 +123,7 @@ public:
     LoadBalancer& getLB(int id) { return *lbs_[id]; }
     
     // Get number of LBs
-    int getNumLBs() const { return lbs_.size(); }
+    int getNumLBs() const { return static_cast<int>(lbs_.size()); }
     
     // Get aggregated stats
     struct AggregatedStats {

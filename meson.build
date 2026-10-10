@@ -60,7 +60,7 @@ if live_capture
       meson.get_compiler('cpp').find_library('wpcap', required: true, dirs: sdk_lib_dir),
       meson.get_compiler('cpp').find_library('ws2_32', required: true),
     ]
-    pcap_include_dirs += npcap_sdk / 'Include'
+    pcap_include_dirs += include_directories(npcap_sdk / 'Include')
   else
     pcap_dep = dependency('libpcap', required: false)
     if pcap_dep.found()
@@ -82,11 +82,16 @@ endif
 # ---------------------------------------------------------------------------
 # DPI engine executable
 # ---------------------------------------------------------------------------
+engine_include_dirs = include_directories('include')
+if pcap_include_dirs.length() > 0
+  engine_include_dirs += pcap_include_dirs
+endif
+
 dpi_engine = executable(
   'dpi_engine',
   engine_sources,
   dependencies: [thread_dep] + pcap_deps + extra_deps + win_deps,
-  include_directories: include_directories('include', pcap_include_dirs),
+  include_directories: engine_include_dirs,
   install: true,
 )
 
@@ -113,10 +118,11 @@ if get_option('tests')
       'src/blocklist.cpp',
       'src/vpn_detector.cpp',
       'src/events.cpp',
+      'src/ipc_emitter.cpp',
       'src/types.cpp',
       'src/packet_parser.cpp',
     ),
-    dependencies: [thread_dep] + win_deps,
+    dependencies: [thread_dep] + extra_deps + win_deps,
     include_directories: include_directories('include'),
   )
 endif
@@ -169,6 +175,8 @@ if get_option('tests')
       meson.current_source_dir() / 'test_malicious.pcap',
       meson.current_build_dir() / 'output_malicious.pcap',
       '--block-vpn',
+      '--urlhaus', meson.current_source_dir() / 'data' / 'urlhaus_test_sample.txt',
+      '--vpn-ranges', meson.current_source_dir() / 'data' / 'vpn_ranges.json',
       '--events-out', meson.current_build_dir() / 'events_test.jsonl',
     ],
     timeout: 30,

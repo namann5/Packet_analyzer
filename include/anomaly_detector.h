@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <list>
+#include <deque>
 #include <mutex>
 #include <chrono>
 #include <optional>
@@ -64,11 +65,12 @@ public:
     // Reset all detector states
     void reset();
 
-    const Config& getConfig() const { return config_; }
-    void setConfig(const Config& config) { config_ = config; }
+    Config getConfig() const;
+    void setConfig(const Config& config);
 
 private:
     Config config_;
+    mutable std::mutex config_mutex_;
 
     // ========================================================================
     // 6.1 Port Scan Detector structures
@@ -89,14 +91,10 @@ private:
         }
     };
 
-    struct PortRecord {
-        double timestamp;
-        uint16_t port;
-    };
-
     struct PortScanEntry {
-        std::vector<PortRecord> records;
+        std::unordered_map<uint16_t, double> last_seen_ports;
         double last_alert_time{0.0};
+        bool has_alerted{false};
     };
 
     using PortScanMap = std::unordered_map<PortScanKey, PortScanEntry, PortScanKeyHash>;
@@ -113,13 +111,10 @@ private:
     // 6.2 SYN Flood Detector structures
     // Key: dst_ip
     // ========================================================================
-    struct SYNRecord {
-        double timestamp;
-    };
-
     struct SYNFloodEntry {
-        std::vector<SYNRecord> syn_records;
+        std::deque<double> syn_records;
         double last_alert_time{0.0};
+        bool has_alerted{false};
     };
 
     using SYNFloodMap = std::unordered_map<uint32_t, SYNFloodEntry>;
@@ -153,6 +148,8 @@ private:
 
     mutable std::mutex dns_tunnel_mutex_;
     std::unordered_map<DNSTunnelKey, double, DNSTunnelKeyHash> dns_tunnel_seen_;
+    std::list<DNSTunnelKey> dns_tunnel_lru_;
+    std::unordered_map<DNSTunnelKey, std::list<DNSTunnelKey>::iterator, DNSTunnelKeyHash> dns_tunnel_lru_map_;
     std::unordered_set<std::string> unique_tunnel_domains_;
 
     // ========================================================================

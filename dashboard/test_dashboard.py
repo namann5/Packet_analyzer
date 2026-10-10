@@ -25,6 +25,7 @@ from dashboard.server import (
     MAX_CONNECTIONS,
     MAX_EVENTS,
     MAX_IPC_FRAME_SIZE,
+    DEFAULT_PACKET_BYTES,
 )
 
 
@@ -169,6 +170,15 @@ def test_dashboard_state_malformed_input():
     s.ingest([1, 2, 3])
     s.ingest({"event": "unknown_event_type"})
     assert s.total_packets == 0
+
+
+def test_dashboard_state_preserves_zero_and_rejects_bad_byte_counts():
+    s = DashboardState()
+    s.ingest({"event": "app_classified", "bytes": 0, "blocked": False})
+    s.ingest({"event": "app_classified", "bytes": "not-a-number", "blocked": False})
+
+    assert s.total_packets == 2
+    assert s.total_bytes == DEFAULT_PACKET_BYTES
 
 
 # ============================================================================

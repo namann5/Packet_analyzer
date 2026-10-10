@@ -52,7 +52,8 @@ public:
     bool downloadOnline(const std::string& save_path = "urlhaus_online.txt");
 
     // Load bundled offline fallback sample domains
-    size_t loadBundledSample(const std::string& sample_path = "data/urlhaus_test_sample.txt");
+    // The synthetic fixture is opt-in; callers must provide its path.
+    size_t loadBundledSample(const std::string& sample_path);
 
     // Add single domain or URL
     void addDomain(const std::string& domain);
