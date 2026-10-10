@@ -1,8 +1,8 @@
 # System Verification & Basic Checks Record
 
-**Generated:** 2026-10-10 09:19:36 UTC  
-**Base Revision:** `ecf7671` on branch `pr-8` (checks ran against this revision plus the working tree; this record is not part of the revision it describes)  
-**Repository State:** Modified (14 tracked files)  
+**Generated:** 2026-10-10 09:20:02 UTC  
+**Base Revision:** `940c9ff` on branch `pr-8` (checks ran against this revision plus the working tree; this record is not part of the revision it describes)  
+**Repository State:** Clean (0 tracked modifications)  
 
 ---
 
@@ -27,7 +27,7 @@
 | **upstream** | `error: No such remote 'upstream'` |
 
 - **Current Branch:** `pr-8`
-- **Working Tree:** Modified (14 tracked files)
+- **Working Tree:** Clean (0 tracked modifications)
 - **Baseline Alignment:** Not verified by this script (compare against `upstream/main` manually)
 
 ---
@@ -72,7 +72,7 @@ A `WARN` means the installed version is missing a declared bound or falls outsid
     from starlette.testclient import TestClient as TestClient  # noqa
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-17 passed, 1 warning in 0.70s
+17 passed, 1 warning in 0.67s
 ```
 
 ---
