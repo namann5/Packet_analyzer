@@ -281,6 +281,9 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--help" || arg == "-h") {
             printUsage(argv[0]);
             return 0;
+        } else if ((arg == "-i" || arg == "--interface" ||
+                    arg == "-o" || arg == "--output") && i + 1 < argc) {
+            ++i;
         } else {
             std::cerr << "Unknown option or missing value: " << arg << "\n";
             printUsage(argv[0]);
