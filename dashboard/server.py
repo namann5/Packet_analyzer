@@ -123,7 +123,7 @@ class DashboardState:
             )
             try:
                 pkt_bytes = max(0, int(pkt_bytes))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 pkt_bytes = DEFAULT_PACKET_BYTES
             self.total_bytes += pkt_bytes
 
