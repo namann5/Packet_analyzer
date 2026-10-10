@@ -93,6 +93,13 @@ void FastPathProcessor::run() {
 PacketAction FastPathProcessor::processPacket(PacketJob& job) {
     // Track B: Port Scan and SYN Flood Anomaly Detection
     if (anomaly_detector_ && anomaly_detector_->processPacket(job)) {
+        if (engine_stats_) {
+            engine_stats_->blocked_total++;
+        }
+        if (ipc_emitter_) {
+            ipc_emitter_->emitAppClassified(
+                job.tuple, appTypeToString(AppType::UNKNOWN), true, "ANOMALY", job.data.size());
+        }
         return PacketAction::DROP;
     }
 
@@ -201,8 +208,6 @@ void FastPathProcessor::inspectPayload(PacketJob& job, Connection* conn) {
     if (job.payload_length == 0 || job.payload_offset >= job.data.size()) {
         return;
     }
-    
-    const uint8_t* payload = job.data.data() + job.payload_offset;
     
     // Try TLS SNI extraction first (most common for HTTPS)
     if (tryExtractSNI(job, conn)) {

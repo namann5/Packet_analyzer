@@ -1,5 +1,6 @@
 #include <csignal>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -245,14 +246,18 @@ int main(int argc, char* argv[]) {
             config.events_output_file = argv[++i];
         } else if (arg == "--pcap-buffer" && i + 1 < argc) {
             unsigned long v = 0;
-            if (!parseULong(argv[++i], v) || v == 0) {
+            constexpr unsigned long max_buffer_mib =
+                static_cast<unsigned long>(std::numeric_limits<int>::max()) /
+                (1024UL * 1024UL);
+            if (!parseULong(argv[++i], v) || v == 0 || v > max_buffer_mib) {
                 std::cerr << "Invalid value for --pcap-buffer (MiB, must be > 0): " << argv[i] << "\n";
                 return 1;
             }
-            config.pcap_buffer_bytes = static_cast<uint32_t>(v) * 1024u * 1024u;
+            config.pcap_buffer_bytes = static_cast<uint32_t>(v * 1024UL * 1024UL);
         } else if (arg == "--duration" && i + 1 < argc) {
             unsigned long v = 0;
-            if (!parseULong(argv[++i], v) || v == 0) {
+            if (!parseULong(argv[++i], v) || v == 0 ||
+                v > static_cast<unsigned long>(std::numeric_limits<uint32_t>::max())) {
                 std::cerr << "Invalid value for --duration (seconds, must be > 0): " << argv[i] << "\n";
                 return 1;
             }
@@ -276,6 +281,10 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--help" || arg == "-h") {
             printUsage(argv[0]);
             return 0;
+        } else {
+            std::cerr << "Unknown option or missing value: " << arg << "\n";
+            printUsage(argv[0]);
+            return 1;
         }
     }
 

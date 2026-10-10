@@ -9,11 +9,22 @@ using namespace PacketAnalyzer;
 void printPacketSummary(const ParsedPacket& pkt, int packet_num) {
     // Format timestamp
     std::time_t time = pkt.timestamp_sec;
-    std::tm* tm = std::localtime(&time);
+    std::tm tm_value{};
+    bool have_local_time = false;
+#ifdef _WIN32
+    have_local_time = (localtime_s(&tm_value, &time) == 0);
+#else
+    have_local_time = (localtime_r(&time, &tm_value) != nullptr);
+#endif
     
     std::cout << "\n========== Packet #" << packet_num << " ==========\n";
-    std::cout << "Time: " << std::put_time(tm, "%Y-%m-%d %H:%M:%S") 
-              << "." << std::setfill('0') << std::setw(6) << pkt.timestamp_usec << "\n";
+    std::cout << "Time: ";
+    if (have_local_time) {
+        std::cout << std::put_time(&tm_value, "%Y-%m-%d %H:%M:%S");
+    } else {
+        std::cout << "invalid";
+    }
+    std::cout << "." << std::setfill('0') << std::setw(6) << pkt.timestamp_usec << "\n";
     
     // Ethernet layer
     std::cout << "\n[Ethernet]\n";

@@ -289,6 +289,45 @@ void testVPNDetection() {
     }
 }
 
+void testEventTelemetryCounters() {
+    std::cout << "[TEST] Event telemetry counters...\n";
+
+    DPIStats engine_stats;
+    EventSink& sink = EventSink::instance();
+    sink.setConsoleAlerts(false);
+    sink.configureTelemetry(nullptr, &engine_stats);
+
+    AnomalyEvent anomaly;
+    anomaly.timestamp = 1000.0;
+    anomaly.type = AnomalyType::PORT_SCAN;
+    anomaly.src_ip = "10.0.0.1";
+    anomaly.target_ip = "10.0.0.2";
+    anomaly.count = 16;
+    anomaly.detail = "test";
+    sink.emitAnomaly(anomaly);
+
+    SecurityAlert alert{};
+    alert.timestamp = 1000.0;
+    alert.alert_type = "MALICIOUS";
+    alert.tuple = {0x0100000A, 0x0200000A, 1234, 80, 6};
+    alert.app_or_domain = "bad.example";
+    alert.blocked = true;
+    alert.reason = "MALICIOUS";
+    alert.detail = "test rule";
+    sink.emitAlert(alert);
+
+    CHECK(engine_stats.scan_alerts == 1);
+    CHECK(engine_stats.blocked_total == 1);
+
+    sink.configureTelemetry(nullptr, nullptr);
+    sink.setConsoleAlerts(true);
+    if (g_failures == 0) {
+        std::cout << "  PASS: Event telemetry counters\n";
+    } else {
+        std::cout << "  PARTIAL: Event telemetry counters (failures detected)\n";
+    }
+}
+
 int main() {
     std::cout << "========================================\n";
     std::cout << "Running Track B Unit & Integration Tests\n";
@@ -301,6 +340,7 @@ int main() {
     testSYNFloodDetector();
     testBlocklistTrieAndMatching();
     testVPNDetection();
+    testEventTelemetryCounters();
 
     if (g_failures != 0) {
         std::cerr << "\n" << g_failures << " TRACK B TEST(S) FAILED\n";

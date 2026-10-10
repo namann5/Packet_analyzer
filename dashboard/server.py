@@ -116,15 +116,16 @@ class DashboardState:
 
         if kind == "app_classified":
             self.total_packets += 1
-            pkt_bytes = (
-                event.get("bytes")
-                or event.get("length")
-                or event.get("packet_len")
-                or event.get("size")
+            pkt_bytes = next(
+                (event.get(key) for key in ("bytes", "length", "packet_len", "size")
+                 if event.get(key) is not None),
+                DEFAULT_PACKET_BYTES,
             )
-            if pkt_bytes is None:
+            try:
+                pkt_bytes = max(0, int(pkt_bytes))
+            except (TypeError, ValueError):
                 pkt_bytes = DEFAULT_PACKET_BYTES
-            self.total_bytes += int(pkt_bytes)
+            self.total_bytes += pkt_bytes
 
             app = str(event.get("app") or "Unknown")
             self.app_breakdown[app] = self.app_breakdown.get(app, 0) + 1

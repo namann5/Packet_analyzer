@@ -113,6 +113,7 @@ if get_option('tests')
       'src/blocklist.cpp',
       'src/vpn_detector.cpp',
       'src/events.cpp',
+      'src/ipc_emitter.cpp',
       'src/types.cpp',
       'src/packet_parser.cpp',
     ),
