@@ -122,7 +122,7 @@ if get_option('tests')
       'src/types.cpp',
       'src/packet_parser.cpp',
     ),
-    dependencies: [thread_dep] + win_deps,
+    dependencies: [thread_dep] + extra_deps + win_deps,
     include_directories: include_directories('include'),
   )
 endif
