@@ -91,6 +91,7 @@ private:
     ~EventSink();
 
     std::mutex mutex_;
+    std::mutex console_mutex_;
     EventCallback callback_;
     std::ofstream outfile_;
     SecurityStats stats_;

@@ -42,7 +42,7 @@ std::string escapeJSON(const std::string& input) {
             int len = 0;
             if ((c & 0xE0) == 0xC0) len = 2;
             else if ((c & 0xF0) == 0xE0) len = 3;
-            else if ((c & 0xF8) == 0xF0) len = 4;
+            else if (c >= 0xF0 && c <= 0xF4) len = 4;
 
             bool valid = (len > 0) && (i + static_cast<size_t>(len) <= n);
             if (valid) {
@@ -76,7 +76,7 @@ std::string sanitizeForConsole(const std::string& input) {
     std::string out;
     out.reserve(input.size());
     for (unsigned char c : input) {
-        if (c < 0x20 || c == 0x7F) {
+        if (c < 0x20 || (c >= 0x7F && c <= 0x9F)) {
             out += '?';
         } else {
             out += static_cast<char>(c);
@@ -238,6 +238,7 @@ void EventSink::emitAnomaly(const AnomalyEvent& event) {
     emitRawJSON(json);
 
     if (console_alerts_.load()) {
+        std::lock_guard<std::mutex> console_lock(console_mutex_);
         std::cout << "\033[1;31m[ALERT] " << anomalyTypeToString(event.type)
                   << " detected from " << sanitizeForConsole(event.src_ip)
                   << " -> " << sanitizeForConsole(event.target_ip)
@@ -279,6 +280,7 @@ void EventSink::emitAlert(const SecurityAlert& alert) {
     }
 
     if (console_alerts_.load()) {
+        std::lock_guard<std::mutex> console_lock(console_mutex_);
         std::string color = alert.blocked ? "\033[1;31m" : "\033[1;33m";
         std::cout << color << "[SECURITY] " << sanitizeForConsole(alert.alert_type)
                   << (alert.blocked ? " [BLOCKED]" : " [FLAGGED]")

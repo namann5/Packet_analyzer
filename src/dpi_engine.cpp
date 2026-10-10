@@ -4,6 +4,8 @@
 #include <iomanip>
 #include <chrono>
 #include <cstring>
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 
 namespace {
@@ -34,6 +36,28 @@ std::string resolveResourcePath(const std::string& configured_path) {
     }
 
     return configured_path;
+}
+
+bool pathsCollide(const std::string& left, const std::string& right) {
+    if (left.empty() || right.empty()) {
+        return false;
+    }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto normalize = [](const fs::path& path) {
+        std::string value = path.lexically_normal().string();
+#ifdef _WIN32
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+#endif
+        return value;
+    };
+    fs::path left_path = fs::absolute(fs::path(left), ec);
+    if (ec) return false;
+    ec.clear();
+    fs::path right_path = fs::absolute(fs::path(right), ec);
+    if (ec) return false;
+    return normalize(left_path) == normalize(right_path);
 }
 
 } // namespace
@@ -84,18 +108,14 @@ bool DPIEngine::initialize() {
 
     // 2. Malicious Blocklist
     blocklist_ = std::make_unique<Blocklist>();
-    const std::string bundled_blocklist =
-        resolveResourcePath("data/urlhaus_test_sample.txt");
     if (config_.download_urlhaus) {
         blocklist_->downloadOnline();
     } else if (!config_.blocklist_file.empty()) {
-        size_t count = blocklist_->loadFromFile(
-            resolveResourcePath(config_.blocklist_file));
+        size_t count = blocklist_->loadFromFile(resolveResourcePath(config_.blocklist_file));
         if (count == 0) {
-            blocklist_->loadBundledSample(bundled_blocklist);
+            std::cerr << "[DPIEngine] Warning: no blocklist entries loaded from "
+                      << config_.blocklist_file << "\n";
         }
-    } else {
-        blocklist_->loadBundledSample(bundled_blocklist);
     }
 
     // 3. VPN Detector
@@ -261,6 +281,13 @@ void DPIEngine::waitForCompletion() {
 
 bool DPIEngine::processFile(const std::string& input_file,
                             const std::string& output_file) {
+
+    if (pathsCollide(config_.events_output_file, input_file) ||
+        pathsCollide(config_.events_output_file, output_file)) {
+        std::cerr << "[DPIEngine] Error: --events-out must not share a path with "
+                  << "the input or output PCAP\n";
+        return false;
+    }
     
     std::cout << "\n[DPIEngine] Processing: " << input_file << "\n";
     if (!output_file.empty()) {
@@ -281,6 +308,12 @@ bool DPIEngine::processFile(const std::string& input_file,
 
 bool DPIEngine::processLive(const std::string& iface_name,
                             const std::string& output_file) {
+
+    if (pathsCollide(config_.events_output_file, output_file)) {
+        std::cerr << "[DPIEngine] Error: --events-out must not share a path with "
+                  << "the output PCAP\n";
+        return false;
+    }
     
     std::cout << "\n[DPIEngine] Live capture on interface: " << iface_name << "\n";
     if (!output_file.empty()) {
@@ -325,7 +358,7 @@ bool DPIEngine::runCapture(CaptureSource& source,
     // Start processing threads
     start();
     stop_capture_ = false;
-    active_source_ = &source;
+    capture_stats_available_ = false;
 
     // Start reader thread against the capture source
     reader_finished_ = false;
@@ -362,8 +395,8 @@ bool DPIEngine::runCapture(CaptureSource& source,
         processing_complete_ = true;
     }
 
-    // active_source_ stays valid until runCapture() returns, so that the
-    // post-capture report can surface capture-layer drop statistics.
+    // Snapshot capture statistics before the stack-local source is destroyed.
+    capture_stats_available_ = source.captureStats(capture_stats_);
     
     // Stop all threads
     stop();
@@ -448,6 +481,7 @@ PacketJob DPIEngine::createPacketJob(const CapturePacket& raw,
     job.packet_id = packet_id;
     job.ts_sec = raw.header.ts_sec;
     job.ts_usec = raw.header.ts_usec;
+    job.timestamp_valid = true;
     
     // Set five-tuple - parse IP addresses from string back to uint32
     auto parseIP = [](const std::string& ip) -> uint32_t {
@@ -660,9 +694,8 @@ std::string DPIEngine::generateReport() const {
     // Capture-layer accounting (live only): packets/drops surfaced by the
     // capture library (pcap_stats). The benchmark angle: our multi-threaded
     // pipeline must keep capture-layer drops near zero under load.
-    if (active_source_ && active_source_->isLive()) {
-        CaptureStats cstats;
-        if (active_source_->captureStats(cstats)) {
+    if (capture_stats_available_) {
+        const CaptureStats& cstats = capture_stats_;
             ss << "╠══════════════════════════════════════════════════════════════╣\n";
             ss << "║ CAPTURE STATISTICS (pcap)                                    ║\n";
             ss << "║   Received:          " << std::setw(12) << cstats.received << "                        ║\n";
@@ -675,8 +708,7 @@ std::string DPIEngine::generateReport() const {
                    << std::setprecision(2) << cap_drop_pct << "%                        ║\n";
             }
         }
-    }
-    
+
     if (lb_manager_) {
         auto lb_stats = lb_manager_->getAggregatedStats();
         ss << "╠══════════════════════════════════════════════════════════════╣\n";

@@ -67,9 +67,13 @@ public:
         bool verbose = false;
 
         // Track B: Security configuration
-        std::string blocklist_file{"data/urlhaus_test_sample.txt"};
+        // Empty by default: the bundled synthetic list is an explicit test
+        // fixture, not production threat intelligence.
+        std::string blocklist_file;
         bool download_urlhaus = false;
-        std::string vpn_ranges_file{"data/vpn_ranges.json"};
+        // VPN ranges are also opt-in because the repository file contains
+        // synthetic/demo ranges.
+        std::string vpn_ranges_file;
         bool block_malicious = true;
         bool block_vpn = false;
         size_t port_scan_threshold = 15;
@@ -204,9 +208,10 @@ private:
     // Statistics
     DPIStats stats_;
 
-    // Capture source currently backed by runCapture(); used by
-    // generateReport() to surface capture-layer drop statistics.
-    CaptureSource* active_source_{nullptr};
+    // Snapshot capture-layer statistics while the source is still alive.
+    // Never retain a pointer to processFile/processLive's stack-local source.
+    CaptureStats capture_stats_{};
+    bool capture_stats_available_{false};
     
     // Control
     std::atomic<bool> running_{false};

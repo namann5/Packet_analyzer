@@ -1,6 +1,7 @@
 #include "capture_source.h"
 
 #include <iostream>
+#include <limits>
 
 #ifdef HAVE_LIBPCAP
 #include <pcap/pcap.h>
@@ -70,14 +71,29 @@ bool LiveCapture::open(const std::string& iface_name, std::string& error) {
         return false;
     }
     pcap_set_timeout(p, 100);        // read timeout (ms)
-    pcap_set_buffer_size(p, static_cast<int>(buffer_size_));
+    if (buffer_size_ > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+        error = "Capture buffer size exceeds libpcap's signed int limit";
+        pcap_close(p);
+        return false;
+    }
+    if (pcap_set_buffer_size(p, static_cast<int>(buffer_size_)) < 0) {
+        error = "pcap_set_buffer_size failed on " + iface_name + ": " +
+                std::string(pcap_geterr(p));
+        pcap_close(p);
+        return false;
+    }
 
-    if (pcap_activate(p) != 0) {
+    int activate_rc = pcap_activate(p);
+    if (activate_rc < 0) {
         error = "pcap_activate(" + iface_name + ") failed: " +
                 std::string(pcap_geterr(p)) +
                 " (needs admin/root for raw socket access; on Windows install Npcap)";
         pcap_close(p);
         return false;
+    }
+    if (activate_rc > 0) {
+        std::cerr << "[LiveCapture] pcap_activate warning on " << iface_name
+                  << ": " << pcap_geterr(p) << "\n";
     }
 
     handle_ = p;

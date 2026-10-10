@@ -13,6 +13,7 @@ Generate a malicious PCAP with crafted attack traffic for Track B testing:
 
 import struct
 import random
+import argparse
 
 class PCAPWriter:
     def __init__(self, filename):
@@ -165,19 +166,19 @@ def main(output_file='test_malicious.pcap'):
         writer.write_packet(eth + ip_t + udp_t + dns_tunnel, ts_sec=base_ts + 3, ts_usec=i * 50000)
     print(f"  [+] DNS tunneling: {len(tunnel_queries)} deep/high-entropy queries")
 
-    # 5. Malicious URLhaus domains:
-    # 5a. DNS query for bad-malware-domain.com
-    mal_dns = create_dns_query('bad-malware-domain.com')
+    # 5. Synthetic malicious domains from data/urlhaus_test_sample.txt:
+    # 5a. DNS query for bad-malware.test
+    mal_dns = create_dns_query('bad-malware.test')
     udp_m = create_udp_header('192.168.1.130', '8.8.8.8', 54001, 53, mal_dns)
     ip_m = create_ip_header('192.168.1.130', '8.8.8.8', 17, len(udp_m) + len(mal_dns))
     writer.write_packet(eth + ip_m + udp_m + mal_dns, ts_sec=base_ts + 4, ts_usec=10000)
 
-    # 5b. TLS SNI for c2-server.evilcorp.biz
-    tls_mal = create_tls_client_hello('c2-server.evilcorp.biz')
+    # 5b. TLS SNI for c2-server.evilcorp.test
+    tls_mal = create_tls_client_hello('c2-server.evilcorp.test')
     tcp_mal = create_tcp_header('192.168.1.130', '198.51.100.99', 54002, 443, 2000, 0, 0x18, tls_mal)
     ip_mal = create_ip_header('192.168.1.130', '198.51.100.99', 6, len(tcp_mal) + len(tls_mal))
     writer.write_packet(eth + ip_mal + tcp_mal + tls_mal, ts_sec=base_ts + 4, ts_usec=20000)
-    print(f"  [+] URLhaus matches: bad-malware-domain.com (DNS) & c2-server.evilcorp.biz (TLS SNI)")
+    print(f"  [+] Synthetic URLhaus matches: bad-malware.test (DNS) & c2-server.evilcorp.test (TLS SNI)")
 
     # 6. WireGuard Handshake Initiation packet: UDP 51820, Type 1, 3 zero reserved bytes, 148 bytes
     wg_payload = bytearray(148)
@@ -219,4 +220,9 @@ def main(output_file='test_malicious.pcap'):
     print(f"Done! Created '{output_file}'.")
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description='Generate the synthetic malicious PCAP fixture.')
+    parser.add_argument(
+        'output_file', nargs='?', default='test_malicious.pcap',
+        help='output PCAP path (default: test_malicious.pcap)',
+    )
+    main(parser.parse_args().output_file)

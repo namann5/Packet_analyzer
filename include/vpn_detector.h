@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <mutex>
 #include <atomic>
 #include "types.h"
@@ -42,7 +43,8 @@ class VPNDetector {
 public:
     struct Config {
         bool block_vpn = false;               // If true, drops detected VPN traffic
-        std::string vpn_ranges_path = "data/vpn_ranges.json";
+        // Synthetic/demo ranges must be explicitly configured by callers.
+        std::string vpn_ranges_path;
     };
 
     explicit VPNDetector();
@@ -65,9 +67,9 @@ public:
 
     bool matchesVPNRange(uint32_t ip, std::string* label = nullptr) const;
 
-    const Config& getConfig() const { return config_; }
-    void setConfig(const Config& config) { config_ = config; block_vpn_.store(config.block_vpn); }
-    void setBlockVPN(bool block) { config_.block_vpn = block; block_vpn_.store(block); }
+    Config getConfig() const;
+    void setConfig(const Config& config);
+    void setBlockVPN(bool block);
 
     // Thread-safe read of the blocking flag (config_ may be mutated concurrently)
     bool shouldBlockVPN() const { return block_vpn_.load(std::memory_order_relaxed); }
@@ -76,9 +78,14 @@ public:
 
 private:
     Config config_;
+    mutable std::mutex config_mutex_;
     std::atomic<bool> block_vpn_{false};
     mutable std::mutex mutex_;
     std::vector<CIDRRange> ranges_;
+    mutable std::mutex openvpn_mutex_;
+    mutable std::unordered_map<FiveTuple, std::vector<uint8_t>, FiveTupleHash> openvpn_tcp_streams_;
+
+    bool isOpenVPNStream(const PacketJob& job, std::string* detail) const;
 
     static bool parseIPv4(const std::string& ip_str, uint32_t& out);
     static bool parseCIDR(const std::string& cidr_str, uint32_t& network, uint32_t& mask);

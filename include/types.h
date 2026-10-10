@@ -137,6 +137,7 @@ struct Connection {
     bool syn_seen = false;
     bool syn_ack_seen = false;
     bool fin_seen = false;
+    bool vpn_alerted = false;
 };
 
 // ============================================================================
@@ -157,6 +158,7 @@ struct PacketJob {
     // Timestamps
     uint32_t ts_sec;
     uint32_t ts_usec;
+    bool timestamp_valid = false;
 };
 
 // ============================================================================

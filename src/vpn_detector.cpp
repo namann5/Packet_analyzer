@@ -30,6 +30,33 @@ VPNDetector::VPNDetector(const Config& config)
 
 VPNDetector::~VPNDetector() = default;
 
+VPNDetector::Config VPNDetector::getConfig() const {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    return config_;
+}
+
+void VPNDetector::setConfig(const Config& config) {
+    {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        config_ = config;
+        block_vpn_.store(config.block_vpn, std::memory_order_relaxed);
+    }
+    if (!config.vpn_ranges_path.empty()) {
+        loadVPNRanges(config.vpn_ranges_path);
+    } else {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ranges_.clear();
+    }
+}
+
+void VPNDetector::setBlockVPN(bool block) {
+    {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        config_.block_vpn = block;
+    }
+    block_vpn_.store(block, std::memory_order_relaxed);
+}
+
 bool VPNDetector::parseIPv4(const std::string& ip_str, uint32_t& out) {
     if (ip_str.empty()) return false;
 
@@ -139,6 +166,8 @@ bool VPNDetector::loadVPNRanges(const std::string& filepath) {
     std::string content((std::istreambuf_iterator<char>(file)),
                          std::istreambuf_iterator<char>());
 
+    std::vector<CIDRRange> parsed_ranges;
+
     // Light-weight JSON parser for {"cidr": "...", "name": "..."} entries
     size_t pos = 0;
     size_t count = 0;
@@ -165,10 +194,39 @@ bool VPNDetector::loadVPNRanges(const std::string& filepath) {
             }
         }
 
-        if (addCIDR(cidr, label)) {
+        uint32_t network = 0;
+        uint32_t mask = 0;
+        if (parseCIDR(cidr, network, mask)) {
+            parsed_ranges.push_back({network, mask, cidr, label});
             count++;
         }
         pos = q2 + 1;
+    }
+
+    // Also support the documented plaintext format: one CIDR per line,
+    // optionally followed by a # comment.
+    if (count == 0) {
+        std::istringstream lines(content);
+        std::string line;
+        while (std::getline(lines, line)) {
+            const size_t comment = line.find('#');
+            if (comment != std::string::npos) line.erase(comment);
+            const auto first = line.find_first_not_of(" \t\r\n");
+            if (first == std::string::npos) continue;
+            const auto last = line.find_last_not_of(" \t\r\n");
+            const std::string cidr = line.substr(first, last - first + 1);
+            uint32_t network = 0;
+            uint32_t mask = 0;
+            if (parseCIDR(cidr, network, mask)) {
+                parsed_ranges.push_back({network, mask, cidr, "VPN"});
+                ++count;
+            }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ranges_ = std::move(parsed_ranges);
     }
 
     std::cout << "[VPNDetector] Loaded " << count << " CIDR ranges from " << filepath << "\n";
@@ -235,6 +293,9 @@ bool VPNDetector::isWireGuard(const PacketJob& job, std::string* detail) {
 
 bool VPNDetector::isOpenVPN(const PacketJob& job, std::string* detail) {
     // OpenVPN uses port 1194 over TCP or UDP
+    if (job.tuple.protocol != 6 && job.tuple.protocol != 17) {
+        return false;
+    }
     if (job.tuple.src_port != 1194 && job.tuple.dst_port != 1194) {
         return false;
     }
@@ -246,10 +307,20 @@ bool VPNDetector::isOpenVPN(const PacketJob& job, std::string* detail) {
     const uint8_t* p = job.payload_data;
     size_t len = job.payload_length;
 
-    // Over TCP, OpenVPN prepends a 2-byte packet length
-    if (job.tuple.protocol == 6 && len >= 3) {
+    // Over TCP, OpenVPN prepends a network-order two-byte record length.
+    // A capture may split the stream across segments; do not classify a
+    // partial record as OpenVPN merely because its first byte resembles an
+    // opcode.
+    if (job.tuple.protocol == 6) {
+        if (len < 3) return false;
+        const size_t record_len = (static_cast<size_t>(p[0]) << 8) | p[1];
+        if (record_len == 0 || record_len > len - 2) return false;
         p += 2;
-        len -= 2;
+        len = record_len;
+    } else if (len < 2) {
+        // UDP still needs a complete opcode plus at least one byte of packet
+        // content; a one-byte datagram is not a valid OpenVPN record.
+        return false;
     }
 
     if (len < 1) return false;
@@ -268,10 +339,10 @@ bool VPNDetector::isOpenVPN(const PacketJob& job, std::string* detail) {
     // 0x28 = P_ACK_V1 (opcode 5)
     // 0x30 = P_DATA_V1 (opcode 6)
     // 0x48 = P_DATA_V2 (opcode 9)
-    if (op_raw == 0x38 || op_raw == 0x40 || op_raw == 0x08 ||
+    if (op_raw == 0x10 || op_raw == 0x38 || op_raw == 0x40 || op_raw == 0x08 ||
         op_raw == 0x18 || op_raw == 0x20 || op_raw == 0x28 ||
         op_raw == 0x30 || op_raw == 0x48 ||
-        opcode == 1 || opcode == 6 || opcode == 7 || opcode == 8 || opcode == 9) {
+        opcode == 1 || opcode == 2 || opcode == 6 || opcode == 7 || opcode == 8 || opcode == 9) {
         
         if (detail) {
             std::ostringstream ss;
@@ -283,6 +354,59 @@ bool VPNDetector::isOpenVPN(const PacketJob& job, std::string* detail) {
         return true;
     }
 
+    return false;
+}
+
+bool VPNDetector::isOpenVPNStream(const PacketJob& job, std::string* detail) const {
+    if (job.tuple.protocol != 6 ||
+        (job.tuple.src_port != 1194 && job.tuple.dst_port != 1194) ||
+        job.payload_data == nullptr || job.payload_length == 0) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(openvpn_mutex_);
+    if (openvpn_tcp_streams_.size() >= 10000 &&
+        openvpn_tcp_streams_.find(job.tuple) == openvpn_tcp_streams_.end()) {
+        openvpn_tcp_streams_.clear();
+    }
+    auto& stream = openvpn_tcp_streams_[job.tuple];
+    stream.insert(stream.end(), job.payload_data, job.payload_data + job.payload_length);
+    constexpr size_t max_stream_bytes = 128 * 1024;
+    if (stream.size() > max_stream_bytes) {
+        stream.clear();
+        return false;
+    }
+
+    while (stream.size() >= 2) {
+        const size_t record_len = (static_cast<size_t>(stream[0]) << 8) | stream[1];
+        if (record_len == 0 || record_len > 65535) {
+            stream.clear();
+            return false;
+        }
+        if (stream.size() < record_len + 2) {
+            return false;
+        }
+
+        const uint8_t opcode_byte = stream[2];
+        const uint8_t opcode = (opcode_byte >> 3) & 0x1F;
+        const uint8_t op_raw = opcode_byte & 0xF8;
+        const bool recognized =
+            op_raw == 0x10 || op_raw == 0x38 || op_raw == 0x40 || op_raw == 0x08 ||
+            op_raw == 0x18 || op_raw == 0x20 || op_raw == 0x28 || op_raw == 0x30 ||
+            op_raw == 0x48 || opcode == 1 || opcode == 2 || opcode == 6 ||
+            opcode == 7 || opcode == 8 || opcode == 9;
+        if (recognized) {
+            if (detail) {
+                std::ostringstream ss;
+                ss << "OpenVPN (TCP:1194, Opcode 0x" << std::hex
+                   << std::setw(2) << std::setfill('0') << static_cast<int>(op_raw) << ")";
+                *detail = ss.str();
+            }
+            stream.erase(stream.begin(), stream.begin() + record_len + 2);
+            return true;
+        }
+        stream.erase(stream.begin(), stream.begin() + record_len + 2);
+    }
     return false;
 }
 
@@ -327,8 +451,12 @@ VPNDetectionResult VPNDetector::detect(const PacketJob& job) const {
         return res;
     }
 
-    // 2. OpenVPN fingerprinting
-    if (isOpenVPN(job, &detail)) {
+    // 2. OpenVPN fingerprinting. TCP is a byte stream, so retain partial
+    // records across packets before inspecting the opcode.
+    const bool openvpn = job.tuple.protocol == 6
+        ? isOpenVPNStream(job, &detail)
+        : isOpenVPN(job, &detail);
+    if (openvpn) {
         res.detected = true;
         res.type = VPNType::OPENVPN;
         res.protocol_name = "OpenVPN";
