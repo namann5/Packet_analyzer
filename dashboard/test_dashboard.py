@@ -486,42 +486,43 @@ def test_issue_9_engine_anomaly_and_block_ipc_propagation():
     assert stats_post["blocked_reasons"]["MALICIOUS"] == 2
 
 
-@pytest.mark.asyncio
-async def test_issue_9_handle_engine_connection_streaming():
+def test_issue_9_handle_engine_connection_streaming():
     """Verify handle_engine_connection parses streaming JSON lines and broadcasts."""
     from dashboard.server import handle_engine_connection
     from unittest.mock import MagicMock
 
-    reader = asyncio.StreamReader()
-    mock_writer = MagicMock()
-    mock_writer.get_extra_info.return_value = ("127.0.0.1", 12345)
-    mock_writer.close = MagicMock()
-    mock_writer.wait_closed = MagicMock()
+    async def _run_stream_test():
+        reader = asyncio.StreamReader()
+        mock_writer = MagicMock()
+        mock_writer.get_extra_info.return_value = ("127.0.0.1", 12345)
+        mock_writer.close = MagicMock()
 
-    # Create async mock for wait_closed
-    async def dummy_wait_closed():
-        pass
-    mock_writer.wait_closed = dummy_wait_closed
+        # Create async mock for wait_closed
+        async def dummy_wait_closed():
+            pass
+        mock_writer.wait_closed = dummy_wait_closed
 
-    # Feed frames over the reader stream
-    frames = (
-        json.dumps({
-            "event": "anomaly",
-            "type": "PORT_SCAN",
-            "detail": {"src_ip": "10.0.0.66", "target": "10.0.0.1"},
-        }) + "\n" +
-        json.dumps({
-            "event": "app_classified",
-            "app": "bad-host.org",
-            "bytes": 0,
-            "blocked": True,
-            "reason": "MALICIOUS",
-        }) + "\n"
-    )
-    reader.feed_data(frames.encode("utf-8"))
-    reader.feed_eof()
+        # Feed frames over the reader stream
+        frames = (
+            json.dumps({
+                "event": "anomaly",
+                "type": "PORT_SCAN",
+                "detail": {"src_ip": "10.0.0.66", "target": "10.0.0.1"},
+            }) + "\n" +
+            json.dumps({
+                "event": "app_classified",
+                "app": "bad-host.org",
+                "bytes": 0,
+                "blocked": True,
+                "reason": "MALICIOUS",
+            }) + "\n"
+        )
+        reader.feed_data(frames.encode("utf-8"))
+        reader.feed_eof()
 
-    await handle_engine_connection(reader, mock_writer)
+        await handle_engine_connection(reader, mock_writer)
+
+    asyncio.run(_run_stream_test())
 
     assert state.scan_alerts == 1
     assert state.blocked_total == 1
@@ -529,5 +530,6 @@ async def test_issue_9_handle_engine_connection_streaming():
     assert len(state.connections) == 1
     assert state.connections[0]["blocked"] is True
     assert state.connections[0]["reason"] == "MALICIOUS"
+
 
 
