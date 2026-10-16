@@ -372,3 +372,164 @@ def test_simulate_feed_generators():
     assert "detail" in anomaly
     assert "src_ip" in anomaly["detail"]
 
+
+# ============================================================================
+# 7. Issue #9 Verification: Engine Anomaly & Block Events IPC Propagation
+# ============================================================================
+
+def test_issue_9_engine_anomaly_and_block_ipc_propagation():
+    """Verify Issue #9 acceptance criteria:
+    Engine anomaly + block events reach dashboard and populate
+    /api/stats (scan_alerts, syn_flood_alerts, dns_tunnel_alerts, blocked_total),
+    /api/events (PORT_SCAN, SYN_FLOOD, DNS_TUNNEL), and
+    /api/blocked (MALICIOUS blocks).
+    """
+    client = TestClient(app)
+
+    # 1. Anomaly event: PORT_SCAN (contract §4.2)
+    state.ingest({
+        "event": "anomaly",
+        "ts": 1710000000.100,
+        "type": "PORT_SCAN",
+        "detail": {"src_ip": "10.0.0.66", "target": "10.0.0.1", "ports_seen": 20},
+    })
+
+    # 2. Anomaly event: SYN_FLOOD
+    state.ingest({
+        "event": "anomaly",
+        "ts": 1710000000.200,
+        "type": "SYN_FLOOD",
+        "detail": {"src_ip": "10.0.0.77", "target": "10.0.0.1", "syn_rate_pps": 800},
+    })
+
+    # 3. Anomaly event: DNS_TUNNEL (2 distinct events)
+    for i in range(2):
+        state.ingest({
+            "event": "anomaly",
+            "ts": 1710000000.300 + i,
+            "type": "DNS_TUNNEL",
+            "detail": {"src_ip": "10.0.0.88", "domain": f"tunnel{i}.exfil.xyz", "entropy": 4.6},
+        })
+
+    # 4. Blocked security events: MALICIOUS (2x) mirrored as app_classified (EventSink::emitAlert)
+    malicious_domains = ["c2-malware.example.com", "phishing-bank.example.org"]
+    for domain in malicious_domains:
+        state.ingest({
+            "event": "app_classified",
+            "ts": 1710000000.400,
+            "five_tuple": {
+                "src_ip": "10.0.0.99",
+                "src_port": 54321,
+                "dst_ip": "198.51.100.1",
+                "dst_port": 443,
+                "proto": "TCP",
+            },
+            "app": domain,
+            "bytes": 0,
+            "blocked": True,
+            "reason": "MALICIOUS",
+        })
+
+    # 5. Acceptance check: /api/events returns all 4 anomaly events
+    res_events = client.get("/api/events")
+    assert res_events.status_code == 200
+    events_data = res_events.json()
+    assert len(events_data) == 4
+    event_types = [e["type"] for e in events_data]
+    assert event_types.count("PORT_SCAN") == 1
+    assert event_types.count("SYN_FLOOD") == 1
+    assert event_types.count("DNS_TUNNEL") == 2
+
+    # 6. Acceptance check: /api/blocked shows the 2 MALICIOUS blocks
+    res_blocked = client.get("/api/blocked")
+    assert res_blocked.status_code == 200
+    blocked_data = res_blocked.json()
+    assert len(blocked_data) == 2
+    assert all(b["blocked"] is True for b in blocked_data)
+    assert all(b["reason"] == "MALICIOUS" for b in blocked_data)
+    assert {b["app"] for b in blocked_data} == set(malicious_domains)
+
+    # 7. Acceptance check: /api/stats shows accurate counters
+    res_stats = client.get("/api/stats")
+    assert res_stats.status_code == 200
+    stats_data = res_stats.json()
+    assert stats_data["scan_alerts"] == 1
+    assert stats_data["syn_flood_alerts"] == 1
+    assert stats_data["dns_tunnel_alerts"] == 2
+    assert stats_data["blocked_total"] == 2
+    assert stats_data["blocked_reasons"].get("MALICIOUS") == 2
+
+    # 8. Acceptance check: Engine stats frame updates totals without erasing alert/blocked counters
+    state.ingest({
+        "event": "stats",
+        "ts": 1710000001.0,
+        "total_packets": 650,
+        "total_bytes": 48000,
+        "throughput_bps": 15000.0,
+        "app_breakdown": {"Unknown": 648, "c2-malware.example.com": 1, "phishing-bank.example.org": 1},
+        "blocked_total": 2,
+        "blocked_reasons": {"IP": 0, "PORT": 0, "APP": 0, "DOMAIN": 0, "MALICIOUS": 2, "VPN_DETECTED": 0},
+        "scan_alerts": 1,
+        "syn_flood_alerts": 1,
+        "dns_tunnel_alerts": 2,
+    })
+
+    res_stats_post = client.get("/api/stats")
+    assert res_stats_post.status_code == 200
+    stats_post = res_stats_post.json()
+    assert stats_post["total_packets"] == 650
+    assert stats_post["total_bytes"] == 48000
+    assert stats_post["scan_alerts"] == 1
+    assert stats_post["syn_flood_alerts"] == 1
+    assert stats_post["dns_tunnel_alerts"] == 2
+    assert stats_post["blocked_total"] == 2
+    assert stats_post["blocked_reasons"]["MALICIOUS"] == 2
+
+
+def test_issue_9_handle_engine_connection_streaming():
+    """Verify handle_engine_connection parses streaming JSON lines and broadcasts."""
+    from dashboard.server import handle_engine_connection
+    from unittest.mock import MagicMock
+
+    async def _run_stream_test():
+        reader = asyncio.StreamReader()
+        mock_writer = MagicMock()
+        mock_writer.get_extra_info.return_value = ("127.0.0.1", 12345)
+        mock_writer.close = MagicMock()
+
+        # Create async mock for wait_closed
+        async def dummy_wait_closed():
+            pass
+        mock_writer.wait_closed = dummy_wait_closed
+
+        # Feed frames over the reader stream
+        frames = (
+            json.dumps({
+                "event": "anomaly",
+                "type": "PORT_SCAN",
+                "detail": {"src_ip": "10.0.0.66", "target": "10.0.0.1"},
+            }) + "\n" +
+            json.dumps({
+                "event": "app_classified",
+                "app": "bad-host.org",
+                "bytes": 0,
+                "blocked": True,
+                "reason": "MALICIOUS",
+            }) + "\n"
+        )
+        reader.feed_data(frames.encode("utf-8"))
+        reader.feed_eof()
+
+        await handle_engine_connection(reader, mock_writer)
+
+    asyncio.run(_run_stream_test())
+
+    assert state.scan_alerts == 1
+    assert state.blocked_total == 1
+    assert len(state.events) == 1
+    assert len(state.connections) == 1
+    assert state.connections[0]["blocked"] is True
+    assert state.connections[0]["reason"] == "MALICIOUS"
+
+
+

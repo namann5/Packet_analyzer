@@ -144,7 +144,7 @@ class DashboardState:
             if "id" not in event:
                 event["id"] = self._event_counter
 
-            atype = str(event.get("type", ""))
+            atype = str(event.get("type", "")).upper()
             self.events.appendleft(event)
             if atype == "PORT_SCAN":
                 self.scan_alerts += 1
@@ -260,6 +260,8 @@ async def handle_engine_connection(reader: asyncio.StreamReader, writer: asyncio
                         event = json.loads(line)
                         if isinstance(event, dict):
                             state.ingest(event)
+                            if manager._clients and event.get("event") in ("anomaly", "app_classified"):
+                                await manager.broadcast(event)
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         pass
     except (OSError, asyncio.IncompleteReadError):
