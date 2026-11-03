@@ -347,7 +347,7 @@ def test_websocket_endpoint():
 def test_simulate_feed_generators():
     from dashboard.simulate_feed import generate_packet_event, generate_anomaly_event
 
-    pkt = generate_packet_event()
+    pkt, sec_alert = generate_packet_event()
     assert pkt["event"] == "app_classified"
     assert "five_tuple" in pkt
     assert "src_ip" in pkt["five_tuple"]
@@ -361,4 +361,125 @@ def test_simulate_feed_generators():
     assert anomaly["type"] in ["PORT_SCAN", "SYN_FLOOD", "DNS_TUNNEL"]
     assert "detail" in anomaly
     assert "src_ip" in anomaly["detail"]
+
+
+# ============================================================================
+# 7. Security Alert & VPN / Malicious Handling Tests (Track B Verification)
+# ============================================================================
+
+def test_dashboard_state_security_alert_vpn_modes_and_no_double_count():
+    s = DashboardState()
+
+    # 1. Flag-only VPN event: security alert + flow frame (allowed)
+    sec_alert_flag = {
+        "event": "security_alert",
+        "alert_type": "VPN_DETECTED",
+        "detail": "WireGuard detected (UDP:51820)",
+        "app_or_domain": "WireGuard",
+        "blocked": False,
+        "reason": "",
+    }
+    s.ingest(sec_alert_flag)
+    assert s.vpn_detections == 1
+    assert s.vpn_blocks == 0
+    assert s.blocked_total == 0  # Alert alone MUST NOT increment blocked_total
+
+    flow_flag = {
+        "event": "app_classified",
+        "app": "WireGuard",
+        "bytes": 500,
+        "blocked": False,
+        "reason": None,
+    }
+    s.ingest(flow_flag)
+    assert s.vpn_detections == 1
+    assert s.vpn_blocks == 0
+    assert s.blocked_total == 0
+
+    # 2. Block VPN event: security alert + flow frame (blocked)
+    sec_alert_block = {
+        "event": "security_alert",
+        "alert_type": "VPN_DETECTED",
+        "detail": "OpenVPN detected on port 1194",
+        "app_or_domain": "OpenVPN",
+        "blocked": True,
+        "reason": "VPN_DETECTED",
+    }
+    s.ingest(sec_alert_block)
+    assert s.vpn_detections == 2
+    assert s.vpn_blocks == 1
+    assert s.blocked_total == 0  # Still 0 because app_classified hasn't arrived yet!
+
+    flow_block = {
+        "event": "app_classified",
+        "app": "OpenVPN",
+        "bytes": 256,
+        "blocked": True,
+        "reason": "VPN_DETECTED",
+    }
+    s.ingest(flow_block)
+    # Total blocked must be exactly 1: no double counting between security_alert and app_classified
+    assert s.blocked_total == 1
+    assert s.blocked_reasons.get("VPN_DETECTED") == 1
+    assert s.vpn_detections == 2
+    assert s.vpn_blocks == 1
+
+
+def test_dashboard_state_security_alert_malicious_domain():
+    s = DashboardState()
+
+    sec_alert = {
+        "event": "security_alert",
+        "alert_type": "MALICIOUS",
+        "detail": "URLhaus match: malware-c2.example.com",
+        "app_or_domain": "malware-c2.example.com",
+        "blocked": True,
+        "reason": "MALICIOUS",
+    }
+    s.ingest(sec_alert)
+    assert s.malicious_domain_blocks == 1
+    assert s.blocked_total == 0  # No double counting before flow frame
+
+    flow_block = {
+        "event": "app_classified",
+        "app": "DNS",
+        "bytes": 128,
+        "blocked": True,
+        "reason": "MALICIOUS",
+    }
+    s.ingest(flow_block)
+    assert s.blocked_total == 1
+    assert s.blocked_reasons.get("MALICIOUS") == 1
+    assert s.malicious_domain_blocks == 1
+
+
+def test_api_stats_vpn_and_malicious_fields():
+    client = TestClient(app)
+    state.ingest({
+        "event": "security_alert",
+        "alert_type": "VPN_DETECTED",
+        "detail": "WireGuard handshake",
+        "app_or_domain": "WireGuard",
+        "blocked": False,
+        "reason": "",
+    })
+    state.ingest({
+        "event": "security_alert",
+        "alert_type": "MALICIOUS",
+        "detail": "URLhaus match: bad.xyz",
+        "app_or_domain": "bad.xyz",
+        "blocked": True,
+        "reason": "MALICIOUS",
+    })
+
+    res = client.get("/api/stats")
+    assert res.status_code == 200
+    data = res.json()
+    assert "vpn_detections" in data
+    assert "vpn_blocks" in data
+    assert "malicious_domain_blocks" in data
+    assert "vpn_action" in data
+    assert data["vpn_detections"] == 1
+    assert data["malicious_domain_blocks"] == 1
+
 

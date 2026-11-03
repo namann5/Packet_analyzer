@@ -7,6 +7,25 @@
 
 namespace DPI {
 
+std::string vpnActionToString(VPNAction action) {
+    switch (action) {
+        case VPNAction::BLOCK:     return "block";
+        case VPNAction::FLAG_ONLY:
+        default:                   return "flag-only";
+    }
+}
+
+VPNAction stringToVPNAction(const std::string& str) {
+    std::string s = str;
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+        return std::tolower(c);
+    });
+    if (s == "block" || s == "1" || s == "true" || s == "drop") {
+        return VPNAction::BLOCK;
+    }
+    return VPNAction::FLAG_ONLY;
+}
+
 std::string vpnTypeToString(VPNType type) {
     switch (type) {
         case VPNType::WIREGUARD:    return "WireGuard";
@@ -22,7 +41,24 @@ VPNDetector::VPNDetector() : VPNDetector(Config()) {
 
 VPNDetector::VPNDetector(const Config& config)
     : config_(config) {
-    block_vpn_.store(config_.block_vpn);
+    // Environment variables support: VPN_ACTION and DASHBOARD_BLOCK_VPN
+    const char* vpn_action_env = std::getenv("VPN_ACTION");
+    if (vpn_action_env && *vpn_action_env) {
+        config_.action = stringToVPNAction(vpn_action_env);
+        config_.block_vpn = (config_.action == VPNAction::BLOCK);
+    } else {
+        const char* block_env = std::getenv("DASHBOARD_BLOCK_VPN");
+        if (block_env && *block_env) {
+            config_.action = stringToVPNAction(block_env);
+            config_.block_vpn = (config_.action == VPNAction::BLOCK);
+        }
+    }
+
+    if (config_.block_vpn) {
+        config_.action = VPNAction::BLOCK;
+    }
+    block_vpn_.store(config_.action == VPNAction::BLOCK);
+
     if (!config_.vpn_ranges_path.empty()) {
         loadVPNRanges(config_.vpn_ranges_path);
     }
@@ -129,9 +165,10 @@ bool VPNDetector::addCIDR(const std::string& cidr_str, const std::string& label)
 bool VPNDetector::loadVPNRanges(const std::string& filepath) {
     std::ifstream file(filepath);
     if (!file.is_open()) {
-        // Only warn when an explicit path was provided (non-empty). The
-        // default path may be missing in build/test directories; suppress
-        // noise in that case.
+        // Fallback to parent directory if executing from build/
+        file.open("../" + filepath);
+    }
+    if (!file.is_open()) {
         (void)filepath;
         return false;
     }

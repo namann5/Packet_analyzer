@@ -154,6 +154,8 @@ function updateStats(snap) {
   document.getElementById("s-scans").textContent      = snap.scan_alerts;
   document.getElementById("s-floods").textContent     = snap.syn_flood_alerts;
   document.getElementById("s-tunnels").textContent    = snap.dns_tunnel_alerts;
+  const vpnEl = document.getElementById("s-vpn");
+  if (vpnEl && snap.vpn_detections != null) vpnEl.textContent = snap.vpn_detections;
 }
 
 // ── Throughput chart ─────────────────────────────────────────────────────────
@@ -225,11 +227,13 @@ const seenEventKeys = new Set();
 function getEventKey(event) {
   if (!event) return "";
   if (event.id != null) return `id_${event.id}`;
-  return `${event.ts || ""}_${event.type || ""}_${JSON.stringify(event.detail || {})}`;
+  const t = event.type || event.alert_type || event.reason || "";
+  const d = typeof event.detail === "string" ? event.detail : JSON.stringify(event.detail || {});
+  return `${event.ts || ""}_${t}_${d}`;
 }
 
 function appendAlert(event) {
-  if (!event || event.event !== "anomaly") return;
+  if (!event || (event.event !== "anomaly" && event.event !== "security_alert")) return;
 
   const eventKey = getEventKey(event);
   if (eventKey && seenEventKeys.has(eventKey)) return;
@@ -249,11 +253,35 @@ function appendAlert(event) {
   // trim
   while (alertFeed.children.length >= 40) alertFeed.removeChild(alertFeed.lastChild);
 
-  const allowedTypes = ["PORT_SCAN", "SYN_FLOOD", "DNS_TUNNEL"];
-  const typeClass = allowedTypes.includes(event.type) ? event.type : "OTHER";
-  const detail = event.detail
-    ? Object.entries(event.detail).map(([k, v]) => `${k}=${v}`).join(" ")
-    : "";
+  const rawType = event.type || event.alert_type || event.reason || "OTHER";
+  let typeClass = rawType;
+  let badgeText = rawType;
+
+  if (rawType === "VPN_DETECTED") {
+    if (event.blocked) {
+      typeClass = "VPN_DETECTED";
+      badgeText = "VPN BLOCKED";
+    } else {
+      typeClass = "VPN_FLAGGED";
+      badgeText = "VPN FLAGGED";
+    }
+  } else if (rawType === "MALICIOUS") {
+    typeClass = "MALICIOUS";
+    badgeText = "MALICIOUS";
+  } else {
+    const allowedTypes = ["PORT_SCAN", "SYN_FLOOD", "DNS_TUNNEL"];
+    typeClass = allowedTypes.includes(rawType) ? rawType : "OTHER";
+  }
+
+  let detail = "";
+  if (typeof event.detail === "string") {
+    detail = event.detail;
+  } else if (event.detail && typeof event.detail === "object") {
+    detail = Object.entries(event.detail).map(([k, v]) => `${k}=${v}`).join(" ");
+  }
+  if (!detail && event.app_or_domain) {
+    detail = event.app_or_domain;
+  }
 
   const li = document.createElement("li");
 
@@ -263,7 +291,7 @@ function appendAlert(event) {
 
   const badgeSpan = document.createElement("span");
   badgeSpan.className = `badge ${typeClass}`;
-  badgeSpan.textContent = String(event.type || "UNKNOWN");
+  badgeSpan.textContent = badgeText;
 
   const detailSpan = document.createElement("span");
   detailSpan.className = "alert-detail";
@@ -451,7 +479,7 @@ function connect() {
   ws.onmessage = ({ data }) => {
     try {
       const msg = JSON.parse(data);
-      if (msg.event === "anomaly") {
+      if (msg.event === "anomaly" || msg.event === "security_alert") {
         if (!isStreamPaused) appendAlert(msg);
       } else if (msg.event === "app_classified") {
         addConnection(msg);

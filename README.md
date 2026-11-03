@@ -935,6 +935,58 @@ build/dpi_engine input.pcap output.pcap --lbs 2 --fps 2
 # 2 LBs × 2 FPs = 4 FP processing threads
 ```
 
+### Security Engine Options (Track B)
+
+#### URLhaus Malicious Domain Blocklist
+The engine inspects extracted DNS query names, TLS SNIs, and HTTP Host headers against an in-memory bounded domain trie and IP set.
+- **On-demand download:**
+  ```bash
+  build/dpi_engine input.pcap output.pcap --download-urlhaus
+  ```
+  Fetches the latest online blocklist from `https://urlhaus.abuse.ch/downloads/text/`.
+- **Periodic refresh interval & memory bounds:**
+  ```bash
+  build/dpi_engine -i eth0 -o live.pcap --download-urlhaus --urlhaus-refresh 3600 --urlhaus-max-size 75000
+  ```
+  `--urlhaus-refresh <sec>` re-fetches blocklist in the background; `--urlhaus-max-size <n>` bounds trie capacity (default: 50,000).
+- **Offline fallback & safety guards:**
+  - When offline or unreachable, falls back seamlessly to `data/urlhaus_sample.txt` or `data/urlhaus_test_sample.txt`.
+  - Checks header `# Generated at:` and filesystem modification time, issuing a warning if the list is older than 7 days.
+  - Automatically filters bare TLDs, single labels, RFC1918 private/loopback IPs, and popular platform roots (`google.com`, `github.com`, `microsoft.com`, etc.) to prevent false positives.
+
+#### VPN & Tunneled Traffic Detection
+Detects WireGuard (UDP:51820 initial handshake), OpenVPN (TCP/UDP:1194 opcodes & HMAC), IPSec (IP proto 50/51 ESP/AH), and curated VPN IP ranges.
+- **Action Policy (`block` vs `flag-only`):**
+  - **Block mode:** Drops packets, terminates flow, and records block reason `VPN_DETECTED`:
+    ```bash
+    build/dpi_engine input.pcap output.pcap --vpn-action block
+    # Or using shorthand:
+    build/dpi_engine input.pcap output.pcap --block-vpn
+    ```
+  - **Flag-only mode (default):** Forwards packets, tags connection `CLASSIFIED`, and surfaces telemetry alert without incrementing blocked count:
+    ```bash
+    build/dpi_engine input.pcap output.pcap --vpn-action flag-only
+    # Or using shorthand:
+    build/dpi_engine input.pcap output.pcap --flag-vpn
+    ```
+- **Environment variables:**
+  - `VPN_ACTION=block` or `VPN_ACTION=flag-only`
+  - `DASHBOARD_BLOCK_VPN=1` (legacy compatibility for block mode)
+- **Curated CIDR Range List (`data/vpn_ranges.json`):**
+  Includes verified subnets for Mullvad, ProtonVPN, NordVPN, Surfshark, IVPN, Tor Exit nodes, and default tunnel subnets (10.8.0.0/24, 10.66.66.0/24).
+  To update provider ranges, append or edit entries in `data/vpn_ranges.json`:
+  ```json
+  {
+    "provider": "ProviderName",
+    "protocol": "WireGuard|OpenVPN|Multi",
+    "ranges": ["203.0.113.0/24", "198.51.100.0/22"],
+    "updated_at": "YYYY-MM-DD",
+    "notes": "Verified public exit gateways"
+  }
+  ```
+- **No Double-Counting:** The dashboard cleanly isolates `security_alert` notification events from `app_classified` flow accounting, guaranteeing metrics in `vpn_detections` and `blocked_reasons.VPN_DETECTED` remain accurate.
+
+
 ### Managing Rules (dpi_cli)
 
 The `dpi_cli` tool persists rules to a JSON file so they survive across restarts:

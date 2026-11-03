@@ -168,23 +168,30 @@ Every packet → classification → emits zero or more events; aggregated counte
 - Track per `(src_ip, query pattern)` to suppress noise, report unique tunnel domains
 
 ### 6.4 Malicious domain blocklist (URLhaus)
-- Download `https://urlhaus.abuse.ch/downloads/text/` (URLhaus online blocklist) on-demand
-- Parse into an in-memory **trie / set** of domains; optional refresh interval
-- Match against extracted DNS queries and TLS SNIs
-- On match → block, reason = `MALICIOUS`, emit event (feeds dashboard "blocked by blocklist")
-- Fallback offline: ship a small bundled sample list if no network
+- Download `https://urlhaus.abuse.ch/downloads/text/` (URLhaus online blocklist) on-demand via `--download-urlhaus`
+- Periodic background refresh interval (`--urlhaus-refresh <sec>`, default disabled) and memory cap (`--urlhaus-max-size <n>`, default 50,000 entries)
+- Parse into an in-memory bounded domain trie + IPv4 set; supports exact and subdomain matching
+- Staleness and sanity guards:
+  - Header inspection (`# Generated at: ... UTC`) and filesystem timestamp check (warns when blocklist is > 7 days old)
+  - Domain validation filter: rejects bare TLDs, single labels, RFC1918 private/loopback IPs, and whitelisted platform roots (`google.com`, `github.com`, `microsoft.com`, `cloudflare.com`, etc.)
+- On match → block connection, reason = `MALICIOUS`, emit `security_alert` and `app_classified` events (feeds dashboard "blocked by blocklist")
+- Offline fallback: bundled `data/urlhaus_sample.txt` and `data/urlhaus_test_sample.txt` ensure seamless offline operation without crashes
 
-### 6.5 [Bonus] VPN / tunneled traffic detection (`vpn_detector.*`)
+### 6.5 VPN / tunneled traffic detection (`vpn_detector.*`)
 Protocol fingerprinting:
-- **WireGuard:** UDP src/dst port 51820 + 32-byte initial packet pattern (type 1 message, fixed reserved bytes)
+- **WireGuard:** UDP src/dst port 51820 + 32-byte initial packet pattern (type 1 handshake initiation message, fixed reserved bytes)
 - **OpenVPN:** TCP or UDP port 1194 + characteristic packet opcodes (`P_CONTROL_HARD_RESET_CLIENT_V1` = 0x38, tls-auth HMAC)
 - **IPSec:** IP protocol 50 (ESP) / 51 (AH) in `packet_parser`
-- **Known VPN IP ranges:** static config/CIDR list (`vpn_ranges.json`), match `src_ip`/`dst_ip`
-Match → label connection `VPN_DETECTED`; optionally blockable; surfaced in dashboard
+- **Curated VPN IP ranges:** Curated CIDR list (`data/vpn_ranges.json`) covering verified server subnets for Mullvad (SE, NL, CH, US), ProtonVPN (CH, IS, NL), NordVPN / Surfshark, IVPN, Tor Exit nodes, and default VPN tunnel subnets (10.8.0.0/24, 10.66.66.0/24).
+- **Enforcement action policy:** `--vpn-action <block|flag-only>` (or CLI aliases `--block-vpn`, `--flag-vpn` / `--no-block-vpn`, and environment variables `VPN_ACTION` and `DASHBOARD_BLOCK_VPN`):
+  - `block`: connection dropped, marked BLOCKED, increments `blocked_by_vpn` and `vpn_blocks`
+  - `flag-only`: connection forwarded, marked CLASSIFIED, emitted as alert and surfaces in dashboard without incrementing blocked totals
+- **Zero double-counting:** Dashboard separates `security_alert` telemetry from `app_classified` flow table accounting, guaranteeing no double increments between `vpn_detections` and `blocked_reasons.VPN_DETECTED`.
 
 ### 6.6 Deliverables / demo
 - Crafted / malicious pcap → detectors fire + auto-block; `dpi_engine` console shows alerts
-- Live with URLhaus fetched → known-bad domain blocked & shown
+- Live with URLhaus fetched → known-bad domain blocked & shown on dashboard in real-time
+- VPN detection verified in both `block` and `flag-only` modes without duplicate event counting
 
 ---
 
@@ -238,7 +245,7 @@ Match → label connection `VPN_DETECTED`; optionally blockable; surfaced in das
 3. **IPSec (protocol 50/51)** — TCP/UDP fast-path has no stream for ESP/AH payload inspection; only header flagging possible (that's enough for `VPN_DETECTED`).
 4. **SQLite/JSON dependency** — bundle `sqlite3.c` + nlohmann single headers to keep zero-install ambition; flag if you prefer system packages.
 5. **Dashboard wiring for demos without root/nic** — always support `--export-stats`/replay feed so a nic is not mandatory.
-6. **Blocklist refresh** — offline fallback list must ship; guard against stale/too-aggressive matching.
+6. **Blocklist refresh** — offline fallback list shipped (`data/urlhaus_sample.txt`); staleness / age checks implemented; bounded trie protects against memory exhaustion; domain validation and whitelist safeguards prevent false-positive platform blocking.
 
 ---
 

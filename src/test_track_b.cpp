@@ -289,6 +289,133 @@ void testVPNDetection() {
     }
 }
 
+void testBlocklistValidationAndBounds() {
+    std::cout << "[TEST] Blocklist Domain Validation, Bounded Capacity & Staleness...\n";
+
+    // 1. Validation checks
+    CHECK(Blocklist::isValidMaliciousDomain("bad-domain.com"));
+    CHECK(Blocklist::isValidMaliciousDomain("c2.evil-corp.ru"));
+    CHECK(Blocklist::isValidMaliciousDomain("sub.payload-drop.org"));
+    CHECK(Blocklist::isValidMaliciousDomain("185.196.8.220")); // public IP
+
+    // Over-aggressive matching guards:
+    // Rejects bare TLDs
+    CHECK(!Blocklist::isValidMaliciousDomain("com"));
+    CHECK(!Blocklist::isValidMaliciousDomain("org"));
+    CHECK(!Blocklist::isValidMaliciousDomain("ru"));
+    CHECK(!Blocklist::isValidMaliciousDomain("top"));
+    CHECK(!Blocklist::isValidMaliciousDomain("xyz"));
+
+    // Rejects single label / invalid tokens
+    CHECK(!Blocklist::isValidMaliciousDomain("localhost"));
+    CHECK(!Blocklist::isValidMaliciousDomain("malware"));
+
+    // Rejects core platform whitelisted root domains to prevent catastrophic over-blocking
+    CHECK(!Blocklist::isValidMaliciousDomain("google.com"));
+    CHECK(!Blocklist::isValidMaliciousDomain("github.com"));
+    CHECK(!Blocklist::isValidMaliciousDomain("cloudflare.com"));
+    CHECK(!Blocklist::isValidMaliciousDomain("microsoft.com"));
+    CHECK(!Blocklist::isValidMaliciousDomain("apple.com"));
+
+    // Rejects private and loopback IPs
+    CHECK(!Blocklist::isValidMaliciousDomain("127.0.0.1"));
+    CHECK(!Blocklist::isValidMaliciousDomain("10.0.0.1"));
+    CHECK(!Blocklist::isValidMaliciousDomain("192.168.1.1"));
+    CHECK(!Blocklist::isValidMaliciousDomain("172.16.0.1"));
+
+    // 2. Bounded capacity check
+    Blocklist capped(3);
+    CHECK(capped.addDomain("malware1.com"));
+    CHECK(capped.addDomain("malware2.com"));
+    CHECK(capped.addDomain("malware3.com"));
+    // 4th and 5th should be rejected because capacity is 3
+    CHECK(!capped.addDomain("malware4.com"));
+    CHECK(!capped.addDomain("malware5.com"));
+    CHECK(capped.size() == 3);
+
+    // 3. Staleness check
+    int days_old = 0;
+    // Current data/urlhaus_sample.txt has today's date (2026-11-03) -> not stale
+    CHECK(!Blocklist::checkStaleness("data/urlhaus_sample.txt", 7, &days_old));
+
+    if (g_failures == 0) {
+        std::cout << "  PASS: Blocklist Domain Validation, Bounded Capacity & Staleness\n";
+    } else {
+        std::cout << "  PARTIAL: Blocklist Domain Validation, Bounded Capacity & Staleness (failures detected)\n";
+    }
+}
+
+void testVPNActionsAndCuratedRanges() {
+    std::cout << "[TEST] VPN Action (Flag-Only vs Block) & Curated CIDRs...\n";
+
+    // 1. VPN Action modes
+    VPNDetector::Config cfg;
+    cfg.action = VPNAction::FLAG_ONLY;
+    VPNDetector detector_flag(cfg);
+    CHECK(!detector_flag.isBlock());
+    CHECK(detector_flag.getAction() == VPNAction::FLAG_ONLY);
+
+    detector_flag.setAction(VPNAction::BLOCK);
+    CHECK(detector_flag.isBlock());
+    CHECK(detector_flag.getAction() == VPNAction::BLOCK);
+
+    detector_flag.setBlockVPN(false);
+    CHECK(!detector_flag.isBlock());
+
+    // 2. Curated CIDR detection from data/vpn_ranges.json
+    VPNDetector curated_vpn;
+    bool loaded = curated_vpn.loadVPNRanges("data/vpn_ranges.json");
+    CHECK(loaded);
+    CHECK(curated_vpn.getRangeCount() >= 10);
+
+    // Helper to build IP in little endian (matches parseIPv4 layout)
+    auto makeIP = [](uint8_t a, uint8_t b, uint8_t c, uint8_t d) -> uint32_t {
+        return static_cast<uint32_t>(a) |
+               (static_cast<uint32_t>(b) << 8) |
+               (static_cast<uint32_t>(c) << 16) |
+               (static_cast<uint32_t>(d) << 24);
+    };
+
+    // Test Mullvad (193.138.218.45 in 193.138.218.0/24)
+    PacketJob job_mullvad;
+    job_mullvad.tuple.src_ip = makeIP(193, 138, 218, 45);
+    job_mullvad.tuple.dst_ip = makeIP(8, 8, 8, 8);
+    job_mullvad.tuple.protocol = 6;
+    auto res_m = curated_vpn.detect(job_mullvad);
+    CHECK(res_m.detected);
+    CHECK(res_m.type == VPNType::VPN_IP_RANGE);
+
+    // Test ProtonVPN (185.159.157.10 in 185.159.157.0/24)
+    PacketJob job_proton;
+    job_proton.tuple.src_ip = makeIP(185, 159, 157, 10);
+    job_proton.tuple.dst_ip = makeIP(8, 8, 8, 8);
+    job_proton.tuple.protocol = 6;
+    auto res_p = curated_vpn.detect(job_proton);
+    CHECK(res_p.detected);
+
+    // Test NordVPN (185.220.101.5 in 185.220.101.0/24)
+    PacketJob job_nord;
+    job_nord.tuple.src_ip = makeIP(185, 220, 101, 5);
+    job_nord.tuple.dst_ip = makeIP(8, 8, 8, 8);
+    job_nord.tuple.protocol = 6;
+    auto res_n = curated_vpn.detect(job_nord);
+    CHECK(res_n.detected);
+
+    // Test Non-VPN regular IP (142.250.190.46 - Google)
+    PacketJob job_normal;
+    job_normal.tuple.src_ip = makeIP(142, 250, 190, 46);
+    job_normal.tuple.dst_ip = makeIP(192, 168, 1, 10);
+    job_normal.tuple.protocol = 6;
+    auto res_norm = curated_vpn.detect(job_normal);
+    CHECK(!res_norm.detected);
+
+    if (g_failures == 0) {
+        std::cout << "  PASS: VPN Action Modes & Curated CIDRs\n";
+    } else {
+        std::cout << "  PARTIAL: VPN Action Modes & Curated CIDRs (failures detected)\n";
+    }
+}
+
 int main() {
     std::cout << "========================================\n";
     std::cout << "Running Track B Unit & Integration Tests\n";
@@ -300,12 +427,14 @@ int main() {
     testPortScanDetector();
     testSYNFloodDetector();
     testBlocklistTrieAndMatching();
+    testBlocklistValidationAndBounds();
     testVPNDetection();
+    testVPNActionsAndCuratedRanges();
 
     if (g_failures != 0) {
         std::cerr << "\n" << g_failures << " TRACK B TEST(S) FAILED\n";
         return 1;
     }
-    std::cout << "\nALL TRACK B UNIT TESTS PASSED SUCCESSFULLY! (7/7)\n";
+    std::cout << "\nALL TRACK B UNIT TESTS PASSED SUCCESSFULLY! (9/9)\n";
     return 0;
 }

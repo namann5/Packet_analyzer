@@ -107,16 +107,19 @@ PacketAction FastPathProcessor::processPacket(PacketJob& job) {
                                     conn->app_type == AppType::IPSEC ||
                                     conn->app_type == AppType::VPN_GENERIC);
 
+                AppType vpn_app = AppType::VPN_GENERIC;
+                switch (vpn_res.type) {
+                    case VPNType::WIREGUARD: vpn_app = AppType::WIREGUARD; break;
+                    case VPNType::OPENVPN:   vpn_app = AppType::OPENVPN; break;
+                    case VPNType::IPSEC:     vpn_app = AppType::IPSEC; break;
+                    default:                 vpn_app = AppType::VPN_GENERIC; break;
+                }
+
+                bool block = vpn_detector_->isBlock();
+
                 // Classify + alert only on the first detection for this flow,
                 // so VPN_DETECTED is not re-emitted for every tunneled packet.
                 if (!already_vpn && conn->state != ConnectionState::BLOCKED) {
-                    AppType vpn_app = AppType::VPN_GENERIC;
-                    switch (vpn_res.type) {
-                        case VPNType::WIREGUARD: vpn_app = AppType::WIREGUARD; break;
-                        case VPNType::OPENVPN:   vpn_app = AppType::OPENVPN; break;
-                        case VPNType::IPSEC:     vpn_app = AppType::IPSEC; break;
-                        default:                 vpn_app = AppType::VPN_GENERIC; break;
-                    }
                     conn_tracker_.classifyConnection(conn, vpn_app, vpn_res.protocol_name);
 
                     SecurityAlert alert;
@@ -124,18 +127,27 @@ PacketAction FastPathProcessor::processPacket(PacketJob& job) {
                     alert.alert_type = "VPN_DETECTED";
                     alert.tuple = job.tuple;
                     alert.app_or_domain = vpn_res.protocol_name;
-                    alert.blocked = vpn_detector_->shouldBlockVPN();
+                    alert.blocked = block;
                     alert.reason = "VPN_DETECTED";
                     alert.detail = vpn_res.detail;
                     EventSink::instance().emitAlert(alert);
                 }
 
-                if (vpn_detector_->shouldBlockVPN()) {
+                if (block) {
                     conn_tracker_.blockConnection(conn);
                     if (engine_stats_) {
+                        engine_stats_->blocked_total++;
                         engine_stats_->blocked_by_vpn++;
                     }
+                    if (ipc_emitter_) {
+                        ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(vpn_app), true, "VPN_DETECTED", job.data.size());
+                    }
                     return PacketAction::DROP;
+                } else {
+                    // Flag-only mode: connection is marked CLASSIFIED and forwarded without blocking counters
+                    if (!already_vpn && ipc_emitter_) {
+                        ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(vpn_app), false, "", job.data.size());
+                    }
                 }
             }
         }
@@ -294,6 +306,7 @@ bool FastPathProcessor::tryExtractSNI(const PacketJob& job, Connection* conn) {
             if (blocklist_->isBlocked(*sni, &matched_rule)) {
                 conn_tracker_.blockConnection(conn);
                 if (engine_stats_) {
+                    engine_stats_->blocked_total++;
                     engine_stats_->blocked_by_malicious++;
                 }
                 SecurityAlert alert;
@@ -305,6 +318,9 @@ bool FastPathProcessor::tryExtractSNI(const PacketJob& job, Connection* conn) {
                 alert.reason = "MALICIOUS";
                 alert.detail = "Matched URLhaus rule: " + matched_rule;
                 EventSink::instance().emitAlert(alert);
+                if (ipc_emitter_) {
+                    ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(conn->app_type), true, "MALICIOUS", job.data.size());
+                }
             }
         }
         if (engine_stats_) engine_stats_->app_counts[static_cast<size_t>(app)]++;
@@ -341,6 +357,7 @@ bool FastPathProcessor::tryExtractHTTPHost(const PacketJob& job, Connection* con
             if (blocklist_->isBlocked(*host, &matched_rule)) {
                 conn_tracker_.blockConnection(conn);
                 if (engine_stats_) {
+                    engine_stats_->blocked_total++;
                     engine_stats_->blocked_by_malicious++;
                 }
                 SecurityAlert alert;
@@ -352,6 +369,9 @@ bool FastPathProcessor::tryExtractHTTPHost(const PacketJob& job, Connection* con
                 alert.reason = "MALICIOUS";
                 alert.detail = "Matched URLhaus rule: " + matched_rule;
                 EventSink::instance().emitAlert(alert);
+                if (ipc_emitter_) {
+                    ipc_emitter_->emitAppClassified(job.tuple, appTypeToString(conn->app_type), true, "MALICIOUS", job.data.size());
+                }
             }
         }
         if (engine_stats_) engine_stats_->app_counts[static_cast<size_t>(app)]++;
@@ -411,12 +431,17 @@ PacketAction FastPathProcessor::checkRules(const PacketJob& job, Connection* con
                 break;
             case RuleManager::BlockReason::BLOCK_MALICIOUS:
                 ss << "Malicious " << block_reason->detail;
+                reason_str = "MALICIOUS";
+                if (engine_stats_) engine_stats_->blocked_by_malicious++;
                 break;
             case RuleManager::BlockReason::BLOCK_VPN:
                 ss << "VPN " << block_reason->detail;
+                reason_str = "VPN_DETECTED";
+                if (engine_stats_) engine_stats_->blocked_by_vpn++;
                 break;
             case RuleManager::BlockReason::BLOCK_ANOMALY:
                 ss << "Anomaly " << block_reason->detail;
+                reason_str = "ANOMALY";
                 break;
         }
         if (engine_stats_) engine_stats_->blocked_total++;

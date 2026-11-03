@@ -69,9 +69,12 @@ public:
         // Track B: Security configuration
         std::string blocklist_file{"data/urlhaus_test_sample.txt"};
         bool download_urlhaus = false;
+        uint32_t urlhaus_refresh_interval_sec = 86400; // 24h default refresh
+        size_t urlhaus_max_size = 50000;              // 50k domains bounded memory limit
         std::string vpn_ranges_file{"data/vpn_ranges.json"};
         bool block_malicious = true;
-        bool block_vpn = false;
+        VPNAction vpn_action = VPNAction::FLAG_ONLY;   // First-class VPN action
+        bool block_vpn = false;                        // Backward-compatible flag
         size_t port_scan_threshold = 15;
         double port_scan_window_sec = 5.0;
         size_t syn_flood_threshold = 500;

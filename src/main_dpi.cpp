@@ -52,9 +52,13 @@ Options:
 
 Security Options (Track B):
   --urlhaus <file>        Load URLhaus blocklist from file
-  --download-urlhaus      Fetch latest URLhaus blocklist online
-  --vpn-ranges <file>     Load VPN CIDR ranges JSON file
-  --block-vpn             Block detected VPN and tunneled traffic
+  --download-urlhaus      Fetch latest URLhaus blocklist online on-demand
+  --urlhaus-refresh <sec> Background blocklist refresh interval in sec (default: 86400)
+  --urlhaus-max-size <n>  Maximum bounded memory entries for blocklist (default: 50000)
+  --vpn-ranges <file>     Load curated VPN CIDR ranges JSON file
+  --vpn-action <action>   Action on detected VPN: 'block' or 'flag-only' (default: flag-only)
+  --block-vpn             Shortcut for --vpn-action block
+  --flag-vpn              Shortcut for --vpn-action flag-only
   --no-block-malicious    Do not auto-block malicious domains
   --port-scan-thresh <n>  Port scan unique port threshold (default: 15)
   --syn-flood-thresh <n>  SYN flood packets/sec threshold (default: 500)
@@ -219,10 +223,21 @@ int main(int argc, char* argv[]) {
             config.blocklist_file = argv[++i];
         } else if (arg == "--download-urlhaus") {
             config.download_urlhaus = true;
+        } else if (arg == "--urlhaus-refresh" && i + 1 < argc) {
+            config.urlhaus_refresh_interval_sec = std::stoul(argv[++i]);
+        } else if (arg == "--urlhaus-max-size" && i + 1 < argc) {
+            config.urlhaus_max_size = std::stoul(argv[++i]);
         } else if (arg == "--vpn-ranges" && i + 1 < argc) {
             config.vpn_ranges_file = argv[++i];
+        } else if (arg == "--vpn-action" && i + 1 < argc) {
+            config.vpn_action = stringToVPNAction(argv[++i]);
+            config.block_vpn = (config.vpn_action == VPNAction::BLOCK);
         } else if (arg == "--block-vpn") {
+            config.vpn_action = VPNAction::BLOCK;
             config.block_vpn = true;
+        } else if (arg == "--flag-vpn" || arg == "--no-block-vpn") {
+            config.vpn_action = VPNAction::FLAG_ONLY;
+            config.block_vpn = false;
         } else if (arg == "--no-block-malicious") {
             config.block_malicious = false;
         } else if (arg == "--port-scan-thresh" && i + 1 < argc) {
@@ -260,6 +275,19 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--help" || arg == "-h") {
             printUsage(argv[0]);
             return 0;
+        }
+    }
+
+    // Environment variable fallback if VPN action was not explicitly passed on CLI
+    const char* vpn_action_env = std::getenv("VPN_ACTION");
+    if (vpn_action_env && *vpn_action_env) {
+        config.vpn_action = stringToVPNAction(vpn_action_env);
+        config.block_vpn = (config.vpn_action == VPNAction::BLOCK);
+    } else {
+        const char* dash_vpn_env = std::getenv("DASHBOARD_BLOCK_VPN");
+        if (dash_vpn_env && *dash_vpn_env) {
+            config.vpn_action = stringToVPNAction(dash_vpn_env);
+            config.block_vpn = (config.vpn_action == VPNAction::BLOCK);
         }
     }
 

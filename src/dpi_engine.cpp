@@ -49,7 +49,8 @@ bool DPIEngine::initialize() {
     anomaly_detector_ = std::make_unique<AnomalyDetector>(anom_cfg);
 
     // 2. Malicious Blocklist
-    blocklist_ = std::make_unique<Blocklist>();
+    blocklist_ = std::make_unique<Blocklist>(config_.urlhaus_max_size);
+    blocklist_->setRefreshInterval(std::chrono::seconds(config_.urlhaus_refresh_interval_sec));
     if (config_.download_urlhaus) {
         blocklist_->downloadOnline();
     } else if (!config_.blocklist_file.empty()) {
@@ -63,7 +64,11 @@ bool DPIEngine::initialize() {
 
     // 3. VPN Detector
     VPNDetector::Config vpn_cfg;
-    vpn_cfg.block_vpn = config_.block_vpn;
+    vpn_cfg.action = config_.vpn_action;
+    if (config_.block_vpn) {
+        vpn_cfg.action = VPNAction::BLOCK;
+    }
+    vpn_cfg.block_vpn = (vpn_cfg.action == VPNAction::BLOCK);
     vpn_cfg.vpn_ranges_path = config_.vpn_ranges_file;
     vpn_detector_ = std::make_unique<VPNDetector>(vpn_cfg);
 
@@ -84,6 +89,13 @@ bool DPIEngine::initialize() {
         } else {
             std::cout << "[DPIEngine] Connected IPC emitter to " << config_.ipc_host << ":" << config_.ipc_port << "\n";
         }
+
+        // Bridge EventSink security alerts and anomalies directly to the IPC emitter stream
+        EventSink::instance().setCallback([this](const std::string& json_str) {
+            if (ipc_emitter_) {
+                ipc_emitter_->sendRawJson(json_str);
+            }
+        });
     }
     
     // Create output callback
@@ -167,6 +179,7 @@ void DPIEngine::stop() {
     }
 
     // Disconnect IPC emitter so pending sends unblock immediately
+    EventSink::instance().setCallback(nullptr);
     if (ipc_emitter_) {
         ipc_emitter_->disconnect();
     }
@@ -195,6 +208,14 @@ void DPIEngine::ipcThreadFunc() {
         }
         last_bytes = current_bytes;
         last_time = now;
+
+        // Periodic URLhaus blocklist refresh if enabled and interval expired
+        if (config_.download_urlhaus && config_.urlhaus_refresh_interval_sec > 0 && blocklist_) {
+            if (blocklist_->shouldRefresh()) {
+                std::cout << "[DPIEngine] Periodic URLhaus refresh interval reached. Refreshing...\n";
+                blocklist_->downloadOnline();
+            }
+        }
 
         if (ipc_emitter_) {
             if (!ipc_emitter_->isConnected()) {
