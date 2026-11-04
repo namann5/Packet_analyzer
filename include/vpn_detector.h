@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <mutex>
 #include <atomic>
 #include "types.h"
@@ -51,7 +52,8 @@ public:
     struct Config {
         VPNAction action = VPNAction::FLAG_ONLY; // Default: FLAG_ONLY (alert & monitor, forward packet)
         bool block_vpn = false;                  // Backward compatible flag, synced with action
-        std::string vpn_ranges_path = "data/vpn_ranges.json";
+        // Synthetic/demo ranges must be explicitly configured by callers.
+        std::string vpn_ranges_path;
     };
 
     explicit VPNDetector();
@@ -74,26 +76,12 @@ public:
 
     bool matchesVPNRange(uint32_t ip, std::string* label = nullptr) const;
 
-    const Config& getConfig() const { return config_; }
-    void setConfig(const Config& config) {
-        config_ = config;
-        if (config_.block_vpn && config_.action != VPNAction::BLOCK) {
-            config_.action = VPNAction::BLOCK;
-        }
-        block_vpn_.store(config_.action == VPNAction::BLOCK);
-    }
-    void setAction(VPNAction action) {
-        config_.action = action;
-        config_.block_vpn = (action == VPNAction::BLOCK);
-        block_vpn_.store(action == VPNAction::BLOCK);
-    }
-    VPNAction getAction() const { return config_.action; }
-    bool isBlock() const { return config_.action == VPNAction::BLOCK || block_vpn_.load(std::memory_order_relaxed); }
-    void setBlockVPN(bool block) {
-        config_.block_vpn = block;
-        config_.action = block ? VPNAction::BLOCK : VPNAction::FLAG_ONLY;
-        block_vpn_.store(block);
-    }
+    Config getConfig() const;
+    void setConfig(const Config& config);
+    void setAction(VPNAction action);
+    VPNAction getAction() const;
+    bool isBlock() const;
+    void setBlockVPN(bool block);
 
     // Thread-safe read of the blocking flag
     bool shouldBlockVPN() const { return isBlock(); }
@@ -102,9 +90,14 @@ public:
 
 private:
     Config config_;
+    mutable std::mutex config_mutex_;
     std::atomic<bool> block_vpn_{false};
     mutable std::mutex mutex_;
     std::vector<CIDRRange> ranges_;
+    mutable std::mutex openvpn_mutex_;
+    mutable std::unordered_map<FiveTuple, std::vector<uint8_t>, FiveTupleHash> openvpn_tcp_streams_;
+
+    bool isOpenVPNStream(const PacketJob& job, std::string* detail) const;
 
     static bool parseIPv4(const std::string& ip_str, uint32_t& out);
     static bool parseCIDR(const std::string& cidr_str, uint32_t& network, uint32_t& mask);

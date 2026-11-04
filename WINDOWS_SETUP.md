@@ -229,7 +229,7 @@ g++ -std=c++17 -pthread -O2 -I include -o dpi_engine \
 ---
 
 ## Option 4: Using Visual Studio Code
-
+         
 ### Step 1: Install VS Code
 
 1. Download from: https://code.visualstudio.com/
@@ -436,3 +436,33 @@ If you're stuck:
 4. Google the exact error message
 
 Good luck! 🚀
+
+---
+
+## Live Capture Operational Notes
+
+Live capture uses the Meson `dpi_engine` target with the Npcap SDK. The older
+manual `cl src\\dpi_mt.cpp ...` example above builds the legacy file-processing
+program and does not enable `HAVE_LIBPCAP`; it cannot list interfaces or capture
+live traffic.
+
+From an x64 Native Tools Command Prompt, install Npcap and download the Npcap
+SDK, then configure and build the live-capture target:
+
+```cmd
+meson setup build -Dtests=true -Dlive_capture=true -Dnpcap_sdk=C:\\dev\\npcap-sdk
+meson compile -C build
+build\\dpi_engine.exe -l
+```
+
+Live capture reuses the exact file pipeline; only the packet source changes
+(LiveCapture -> same queue -> LoadBalancer -> FastPath). No sudo is needed on
+Windows once the Npcap driver is installed.
+
+- Interface list: `dpi_engine.exe -l`
+- Capture: `dpi_engine.exe -i <interface> [--pcap-buffer 16] [--duration 60] [-o out.pcap]`
+- Promiscuous mode is always on, but a switched network still delivers only
+  traffic visible to that interface. Unrelated unicast traffic requires a
+  mirrored/SPAN port or a shared network segment.
+- Snaplen is 65535. The kernel/BPF capture buffer defaults to 2 MiB (pcap_set_buffer_size); raise it with `--pcap-buffer MiB` if the report's CAPTURE STATISTICS show drops under load. The report surfaces pcap_stats() (Received / Dropped / If-Dropped / Buffer Drop Rate) - the benchmark angle for showing the multi-threaded pipeline keeps capture drops near zero.
+- Graceful shutdown: Ctrl+C sets a stop flag (no pcap_breakloop needed - capture is non-blocking polling); `--duration <sec>` auto-stops for scripts/benchmarks.

@@ -12,6 +12,8 @@
 
 namespace DPI {
 
+class IPCEmitter;
+
 // Event types
 enum class AnomalyType {
     PORT_SCAN,
@@ -75,6 +77,9 @@ public:
     void emitAlert(const SecurityAlert& alert);
     void emitRawJSON(const std::string& json);
 
+    // Connect the event sink to the engine's live telemetry channels.
+    void configureTelemetry(IPCEmitter* ipc_emitter, DPIStats* engine_stats);
+
     SecurityStats& getStats() { return stats_; }
     const SecurityStats& getStats() const { return stats_; }
 
@@ -86,9 +91,12 @@ private:
     ~EventSink();
 
     std::mutex mutex_;
+    std::mutex console_mutex_;
     EventCallback callback_;
     std::ofstream outfile_;
     SecurityStats stats_;
+    IPCEmitter* ipc_emitter_ = nullptr;
+    DPIStats* engine_stats_ = nullptr;
     std::atomic<bool> console_alerts_{true};
 };
 

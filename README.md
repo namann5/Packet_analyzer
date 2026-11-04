@@ -914,10 +914,16 @@ meson test -C build
 build/dpi_engine test_dpi.pcap output.pcap --block-app YouTube
 ```
 
-**Live capture from an interface (Linux, requires libpcap):**
+**Live capture from an interface (Linux/libpcap or Windows/Npcap):**
 ```bash
-build/dpi_engine -i eth0 -o live.pcap --block-app YouTube
+build/dpi_engine -i eth0 -o live.pcap --block-app YouTube --pcap-buffer 16 --duration 60
 ```
+
+On Windows, use the interface name printed by `build\\dpi_engine.exe -l`
+(Npcap device names are typically shown as `\\Device\\NPF_{...}`). The capture
+buffer defaults to 2 MiB; increase `--pcap-buffer <MiB>` when the CAPTURE
+STATISTICS report shows drops under load. `--duration <sec>` is useful for
+bounded scripts and benchmarks; omit it to run until Ctrl+C.
 
 **List available interfaces:**
 ```bash

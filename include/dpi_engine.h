@@ -67,11 +67,15 @@ public:
         bool verbose = false;
 
         // Track B: Security configuration
-        std::string blocklist_file{"data/urlhaus_test_sample.txt"};
+        // Empty by default: the bundled synthetic list is an explicit test
+        // fixture, not production threat intelligence.
+        std::string blocklist_file;
         bool download_urlhaus = false;
         uint32_t urlhaus_refresh_interval_sec = 86400; // 24h default refresh
         size_t urlhaus_max_size = 50000;              // 50k domains bounded memory limit
-        std::string vpn_ranges_file{"data/vpn_ranges.json"};
+        // VPN ranges are also opt-in because the repository file contains
+        // synthetic/demo ranges.
+        std::string vpn_ranges_file;
         bool block_malicious = true;
         VPNAction vpn_action = VPNAction::FLAG_ONLY;   // First-class VPN action
         bool block_vpn = false;                        // Backward-compatible flag
@@ -85,6 +89,11 @@ public:
         bool enable_ipc = false;
         std::string ipc_host = "127.0.0.1";
         uint16_t ipc_port = 9000;
+
+        // Live capture tuning (bytes; 0 = LiveCapture default of 2 MiB).
+        uint32_t pcap_buffer_bytes = 0;
+        // Auto-stop live capture after N seconds (0 = run until Ctrl+C).
+        uint32_t duration_sec = 0;
     };
     
     DPIEngine(const Config& config);
@@ -102,7 +111,7 @@ public:
     // Capture live traffic from an interface.
     // interface: network device name (e.g. "eth0")
     // output_file: optional output PCAP (empty string = no capture output)
-    bool processLive(const std::string& interface,
+    bool processLive(const std::string& iface_name,
                      const std::string& output_file = "");
     
     // Start the engine (starts all threads)
@@ -201,6 +210,11 @@ private:
     
     // Statistics
     DPIStats stats_;
+
+    // Snapshot capture-layer statistics while the source is still alive.
+    // Never retain a pointer to processFile/processLive's stack-local source.
+    CaptureStats capture_stats_{};
+    bool capture_stats_available_{false};
     
     // Control
     std::atomic<bool> running_{false};

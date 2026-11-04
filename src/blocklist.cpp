@@ -48,10 +48,14 @@ std::vector<std::string> getReversedLabels(const std::string& domain) {
             labels.push_back(domain.substr(0, end));
             break;
         }
-        if (end > dot + 1) {
-            labels.push_back(domain.substr(dot + 1, end - dot - 1));
+        if (end <= dot + 1) {
+            return {};
         }
+        labels.push_back(domain.substr(dot + 1, end - dot - 1));
         end = dot;
+    }
+    if (labels.empty() || labels.back().empty()) {
+        return {};
     }
     return labels;
 }
@@ -379,6 +383,13 @@ std::string Blocklist::normalizeDomain(const std::string& domain) {
         s.pop_back();
     }
 
+    // Empty labels would make a rule such as ".com" collapse into a broad
+    // public-suffix match. Reject leading/interior dots instead.
+    if (s.empty() || s.front() == '.' || s.back() == '.' ||
+        s.find("..") != std::string::npos) {
+        return "";
+    }
+
     // Lowercase
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
         return std::tolower(c);
@@ -395,6 +406,12 @@ std::string Blocklist::extractDomainFromURL(const std::string& url) {
     size_t scheme_pos = s.find("://");
     if (scheme_pos != std::string::npos) {
         s = s.substr(scheme_pos + 3);
+    }
+
+    // Remove optional authority userinfo before parsing host[:port].
+    size_t userinfo_pos = s.rfind('@');
+    if (userinfo_pos != std::string::npos) {
+        s = s.substr(userinfo_pos + 1);
     }
 
     // Stop at path, query, or fragment
@@ -461,7 +478,7 @@ size_t Blocklist::loadFromFile(const std::string& filepath) {
                   << "' is stale (" << days_old << " days old). Recommended to refresh via --download-urlhaus.\n";
     }
 
-    size_t loaded = 0;
+    std::unordered_set<std::string> parsed_domains;
     bool capacity_warned = false;
     std::string line;
     while (std::getline(file, line)) {
@@ -471,13 +488,26 @@ size_t Blocklist::loadFromFile(const std::string& filepath) {
 
         std::string dom = extractDomainFromURL(line);
         if (!dom.empty()) {
-            if (addDomain(dom)) {
-                loaded++;
-            } else if (!capacity_warned && (size() >= max_entries_)) {
+            if (parsed_domains.size() < max_entries_) {
+                parsed_domains.insert(std::move(dom));
+            } else if (!capacity_warned) {
                 std::cout << "[Blocklist] Notice: Reached maximum capacity limit of "
                           << max_entries_ << " entries. Remaining entries skipped.\n";
                 capacity_warned = true;
             }
+        }
+    }
+
+    // A refresh is a snapshot, not an append. Build the replacement while
+    // parsing, then publish it under one lock so removed indicators stop
+    // matching immediately and readers never observe a partial trie.
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        trie_.clear();
+        domain_set_.clear();
+        for (const auto& domain : parsed_domains) {
+            domain_set_.insert(domain);
+            trie_.insert(domain);
         }
     }
 
@@ -486,7 +516,7 @@ size_t Blocklist::loadFromFile(const std::string& filepath) {
         last_refresh_ = std::chrono::steady_clock::now();
         last_loaded_file_ = filepath;
     }
-    return loaded;
+    return parsed_domains.size();
 }
 
 bool Blocklist::downloadOnline(const std::string& save_path) {
@@ -519,7 +549,7 @@ bool Blocklist::downloadOnline(const std::string& save_path) {
     }
 
     std::cout << "[Blocklist] Warning: Online fetch failed; loading offline fallback sample.\n";
-    loadBundledSample();
+    loadBundledSample("data/urlhaus_test_sample.txt");
     return false;
 }
 
@@ -543,7 +573,17 @@ size_t Blocklist::loadBundledSample(const std::string& sample_path) {
         "stealer-logs.cc",
         "cryptominer-pool.club",
         "threat-actor-c2.ru",
-        "apt-backdoor-update.com"
+        "apt-backdoor-update.com",
+        "bad-malware.test",
+        "c2-server.evilcorp.test",
+        "ransomware-distrib.test",
+        "urlhaus-test-malware.test",
+        "trojan-payload-drop.test",
+        "malicious-domain.test",
+        "phishing-portal-bank.test",
+        "botnet-command.test",
+        "stealer-logs.test",
+        "cryptominer-pool.test"
     };
 
     for (const auto& d : kFallbackDomains) {

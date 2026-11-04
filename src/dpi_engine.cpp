@@ -4,6 +4,63 @@
 #include <iomanip>
 #include <chrono>
 #include <cstring>
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
+
+namespace {
+
+std::string resolveResourcePath(const std::string& configured_path) {
+    namespace fs = std::filesystem;
+
+    if (configured_path.empty()) {
+        return configured_path;
+    }
+
+    fs::path configured(configured_path);
+    std::error_code ec;
+    if (configured.is_absolute() || fs::exists(configured, ec)) {
+        return configured_path;
+    }
+
+    // Meson runs binaries from the build directory while the bundled security
+    // data lives in the source tree. Try the source-tree parent first before
+    // falling back to the configured path so a missing file remains diagnosable.
+    fs::path cwd = fs::current_path(ec);
+    if (!ec) {
+        fs::path parent_candidate = (cwd / ".." / configured).lexically_normal();
+        ec.clear();
+        if (fs::exists(parent_candidate, ec) && !ec) {
+            return parent_candidate.string();
+        }
+    }
+
+    return configured_path;
+}
+
+bool pathsCollide(const std::string& left, const std::string& right) {
+    if (left.empty() || right.empty()) {
+        return false;
+    }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto normalize = [](const fs::path& path) {
+        std::string value = path.lexically_normal().string();
+#ifdef _WIN32
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+#endif
+        return value;
+    };
+    fs::path left_path = fs::absolute(fs::path(left), ec);
+    if (ec) return false;
+    ec.clear();
+    fs::path right_path = fs::absolute(fs::path(right), ec);
+    if (ec) return false;
+    return normalize(left_path) == normalize(right_path);
+}
+
+} // namespace
 
 namespace DPI {
 
@@ -28,6 +85,7 @@ DPIEngine::DPIEngine(const Config& config)
 
 DPIEngine::~DPIEngine() {
     stop();
+    EventSink::instance().configureTelemetry(nullptr, nullptr);
 }
 
 bool DPIEngine::initialize() {
@@ -54,22 +112,20 @@ bool DPIEngine::initialize() {
     if (config_.download_urlhaus) {
         blocklist_->downloadOnline();
     } else if (!config_.blocklist_file.empty()) {
-        size_t count = blocklist_->loadFromFile(config_.blocklist_file);
+        size_t count = blocklist_->loadFromFile(resolveResourcePath(config_.blocklist_file));
         if (count == 0) {
-            blocklist_->loadBundledSample();
+            std::cerr << "[DPIEngine] Warning: no blocklist entries loaded from "
+                      << config_.blocklist_file << "\n";
         }
-    } else {
-        blocklist_->loadBundledSample();
     }
 
-    // 3. VPN Detector
     VPNDetector::Config vpn_cfg;
     vpn_cfg.action = config_.vpn_action;
     if (config_.block_vpn) {
         vpn_cfg.action = VPNAction::BLOCK;
     }
     vpn_cfg.block_vpn = (vpn_cfg.action == VPNAction::BLOCK);
-    vpn_cfg.vpn_ranges_path = config_.vpn_ranges_file;
+    vpn_cfg.vpn_ranges_path = resolveResourcePath(config_.vpn_ranges_file);
     vpn_detector_ = std::make_unique<VPNDetector>(vpn_cfg);
 
     // Open events file if specified
@@ -90,13 +146,16 @@ bool DPIEngine::initialize() {
             std::cout << "[DPIEngine] Connected IPC emitter to " << config_.ipc_host << ":" << config_.ipc_port << "\n";
         }
 
-        // Bridge EventSink security alerts and anomalies directly to the IPC emitter stream
+        // Bridge EventSink security alerts directly to the IPC emitter stream
+        // (Anomaly frames are already emitted via configureTelemetry)
         EventSink::instance().setCallback([this](const std::string& json_str) {
-            if (ipc_emitter_) {
+            if (ipc_emitter_ && json_str.find("\"security_alert\"") != std::string::npos) {
                 ipc_emitter_->sendRawJson(json_str);
             }
         });
     }
+
+    EventSink::instance().configureTelemetry(ipc_emitter_.get(), &stats_);
     
     // Create output callback
     auto output_cb = [this](const PacketJob& job, PacketAction action) {
@@ -243,6 +302,13 @@ void DPIEngine::waitForCompletion() {
 
 bool DPIEngine::processFile(const std::string& input_file,
                             const std::string& output_file) {
+
+    if (pathsCollide(config_.events_output_file, input_file) ||
+        pathsCollide(config_.events_output_file, output_file)) {
+        std::cerr << "[DPIEngine] Error: --events-out must not share a path with "
+                  << "the input or output PCAP\n";
+        return false;
+    }
     
     std::cout << "\n[DPIEngine] Processing: " << input_file << "\n";
     if (!output_file.empty()) {
@@ -261,18 +327,27 @@ bool DPIEngine::processFile(const std::string& input_file,
     return runCapture(source, output_file);
 }
 
-bool DPIEngine::processLive(const std::string& interface,
+bool DPIEngine::processLive(const std::string& iface_name,
                             const std::string& output_file) {
+
+    if (pathsCollide(config_.events_output_file, output_file)) {
+        std::cerr << "[DPIEngine] Error: --events-out must not share a path with "
+                  << "the output PCAP\n";
+        return false;
+    }
     
-    std::cout << "\n[DPIEngine] Live capture on interface: " << interface << "\n";
+    std::cout << "\n[DPIEngine] Live capture on interface: " << iface_name << "\n";
     if (!output_file.empty()) {
         std::cout << "[DPIEngine] Output to:  " << output_file << "\n";
     }
     std::cout << "[DPIEngine] Press Ctrl+C to stop.\n\n";
     
     LiveCapture source;
+    if (config_.pcap_buffer_bytes != 0) {
+        source.setBufferSize(config_.pcap_buffer_bytes);
+    }
     std::string error;
-    if (!source.open(interface, error)) {
+    if (!source.open(iface_name, error)) {
         std::cerr << "[DPIEngine] Error: " << error << "\n";
         return false;
     }
@@ -304,15 +379,25 @@ bool DPIEngine::runCapture(CaptureSource& source,
     // Start processing threads
     start();
     stop_capture_ = false;
-    
+    capture_stats_available_ = false;
+
     // Start reader thread against the capture source
     reader_finished_ = false;
     reader_thread_ = std::thread(&DPIEngine::readerThreadLoop, this, &source);
-    
+
     if (source.isLive()) {
-        // Live mode: run until stopCapture() is requested (Ctrl+C) or the
-        // reader ends (fatal capture error).
+        // Live mode: run until stopCapture() is requested (Ctrl+C), the
+        // reader ends (fatal capture error), or --duration elapses.
+        auto start_time = std::chrono::steady_clock::now();
         while (!stop_capture_.load() && !reader_finished_.load()) {
+            if (config_.duration_sec > 0) {
+                auto elapsed = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - start_time).count();
+                if (elapsed >= static_cast<double>(config_.duration_sec)) {
+                    stop_capture_ = true;
+                    break;
+                }
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         // The reader thread sees the stop flag and finishes; join it.
@@ -330,6 +415,9 @@ bool DPIEngine::runCapture(CaptureSource& source,
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         processing_complete_ = true;
     }
+
+    // Snapshot capture statistics before the stack-local source is destroyed.
+    capture_stats_available_ = source.captureStats(capture_stats_);
     
     // Stop all threads
     stop();
@@ -414,6 +502,7 @@ PacketJob DPIEngine::createPacketJob(const CapturePacket& raw,
     job.packet_id = packet_id;
     job.ts_sec = raw.header.ts_sec;
     job.ts_usec = raw.header.ts_usec;
+    job.timestamp_valid = true;
     
     // Set five-tuple - parse IP addresses from string back to uint32
     auto parseIP = [](const std::string& ip) -> uint32_t {
@@ -513,8 +602,11 @@ void DPIEngine::writeOutputPacket(const PacketJob& job) {
     PacketAnalyzer::PcapPacketHeader pkt_header;
     pkt_header.ts_sec = job.ts_sec;
     pkt_header.ts_usec = job.ts_usec;
-    pkt_header.incl_len = job.data.size();
-    pkt_header.orig_len = job.data.size();
+    // PCAP lengths are uint32_t; capture readers cap packets well below this
+    // limit, so make the narrowing conversion explicit for MSVC/GCC warnings.
+    const auto packet_len = static_cast<uint32_t>(job.data.size());
+    pkt_header.incl_len = packet_len;
+    pkt_header.orig_len = packet_len;
     
     output_file_.write(reinterpret_cast<const char*>(&pkt_header), sizeof(pkt_header));
     output_file_.write(reinterpret_cast<const char*>(job.data.data()), job.data.size());
@@ -619,7 +711,25 @@ std::string DPIEngine::generateReport() const {
         double drop_rate = 100.0 * stats_.dropped_packets.load() / stats_.total_packets.load();
         ss << "║   Drop Rate:          " << std::setw(11) << std::fixed << std::setprecision(2) << drop_rate << "%                        ║\n";
     }
-    
+
+    // Capture-layer accounting (live only): packets/drops surfaced by the
+    // capture library (pcap_stats). The benchmark angle: our multi-threaded
+    // pipeline must keep capture-layer drops near zero under load.
+    if (capture_stats_available_) {
+        const CaptureStats& cstats = capture_stats_;
+            ss << "╠══════════════════════════════════════════════════════════════╣\n";
+            ss << "║ CAPTURE STATISTICS (pcap)                                    ║\n";
+            ss << "║   Received:          " << std::setw(12) << cstats.received << "                        ║\n";
+            ss << "║   Dropped:           " << std::setw(12) << cstats.dropped << "                        ║\n";
+            ss << "║   If-Dropped:        " << std::setw(12) << cstats.if_dropped << "                        ║\n";
+            if (cstats.received > 0) {
+                double cap_drop_pct = 100.0 * cstats.dropped /
+                                      static_cast<double>(cstats.received);
+                ss << "║   Buffer Drop Rate:   " << std::setw(11) << std::fixed
+                   << std::setprecision(2) << cap_drop_pct << "%                        ║\n";
+            }
+        }
+
     if (lb_manager_) {
         auto lb_stats = lb_manager_->getAggregatedStats();
         ss << "╠══════════════════════════════════════════════════════════════╣\n";

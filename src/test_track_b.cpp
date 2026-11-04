@@ -25,6 +25,7 @@ static int g_failures = 0;
     } while (0)
 
 void testShannonEntropy() {
+    const int failures_before = g_failures;
     std::cout << "[TEST] Shannon Entropy...\n";
     // Empty string
     CHECK(AnomalyDetector::calculateShannonEntropy("") == 0.0);
@@ -42,7 +43,7 @@ void testShannonEntropy() {
     std::cout << "  Entropy of hex payload: " << e_high << "\n";
     CHECK(e_high > 3.5);
 
-    if (g_failures == 0) {
+    if (g_failures == failures_before) {
         std::cout << "  PASS: Shannon Entropy\n";
     } else {
         std::cout << "  PARTIAL: Shannon Entropy (failures detected)\n";
@@ -50,6 +51,7 @@ void testShannonEntropy() {
 }
 
 void testDomainDepthAndLabels() {
+    const int failures_before = g_failures;
     std::cout << "[TEST] Domain Depth and Labels...\n";
 
     auto labels = AnomalyDetector::splitDomainLabels("a.b.c.d.example.com");
@@ -62,7 +64,7 @@ void testDomainDepthAndLabels() {
     size_t depth = AnomalyDetector::calculateDomainDepth("data.tunnel.sub.evilcorp.com");
     CHECK(depth == 4);
 
-    if (g_failures == 0) {
+    if (g_failures == failures_before) {
         std::cout << "  PASS: Domain Depth\n";
     } else {
         std::cout << "  PARTIAL: Domain Depth (failures detected)\n";
@@ -70,6 +72,7 @@ void testDomainDepthAndLabels() {
 }
 
 void testDNSTunnelHeuristics() {
+    const int failures_before = g_failures;
     std::cout << "[TEST] DNS Tunneling Heuristics...\n";
 
     AnomalyDetector::Config cfg;
@@ -92,7 +95,7 @@ void testDNSTunnelHeuristics() {
     bool tunnel_detected = detector.inspectDNSQuery(normal_job, tunnel_query);
     CHECK(tunnel_detected);
 
-    if (g_failures == 0) {
+    if (g_failures == failures_before) {
         std::cout << "  PASS: DNS Tunneling Detection\n";
     } else {
         std::cout << "  PARTIAL: DNS Tunneling Detection (failures detected)\n";
@@ -100,6 +103,7 @@ void testDNSTunnelHeuristics() {
 }
 
 void testPortScanDetector() {
+    const int failures_before = g_failures;
     std::cout << "[TEST] Port Scan Detector...\n";
 
     AnomalyDetector::Config cfg;
@@ -137,7 +141,7 @@ void testPortScanDetector() {
     CHECK(breach);
     CHECK(detector.isIPAutoBlocked(attacker_ip));
 
-    if (g_failures == 0) {
+    if (g_failures == failures_before) {
         std::cout << "  PASS: Port Scan Detection\n";
     } else {
         std::cout << "  PARTIAL: Port Scan Detection (failures detected)\n";
@@ -145,6 +149,7 @@ void testPortScanDetector() {
 }
 
 void testSYNFloodDetector() {
+    const int failures_before = g_failures;
     std::cout << "[TEST] SYN Flood Detector...\n";
 
     AnomalyDetector::Config cfg;
@@ -165,7 +170,7 @@ void testSYNFloodDetector() {
         job.payload_length = 0;
         job.ts_sec = 200;
         job.ts_usec = i * 10000;
-        detector.processPacket(job);
+        CHECK(!detector.processPacket(job));
     }
 
     // 51st SYN breaches threshold (> 50 in 1s)
@@ -183,7 +188,7 @@ void testSYNFloodDetector() {
     bool flooded = detector.processPacket(trigger_job);
     CHECK(flooded);
 
-    if (g_failures == 0) {
+    if (g_failures == failures_before) {
         std::cout << "  PASS: SYN Flood Detection\n";
     } else {
         std::cout << "  PARTIAL: SYN Flood Detection (failures detected)\n";
@@ -191,6 +196,7 @@ void testSYNFloodDetector() {
 }
 
 void testBlocklistTrieAndMatching() {
+    const int failures_before = g_failures;
     std::cout << "[TEST] URLhaus Blocklist & Domain Trie...\n";
 
     Blocklist bl;
@@ -213,8 +219,10 @@ void testBlocklistTrieAndMatching() {
 
     // URL normalization
     CHECK(Blocklist::extractDomainFromURL("https://c2.test.com:8443/api?x=1") == "c2.test.com");
+    CHECK(Blocklist::extractDomainFromURL("http://user:pass@evil.example/path") == "evil.example");
+    CHECK(Blocklist::normalizeDomain(".com").empty());
 
-    if (g_failures == 0) {
+    if (g_failures == failures_before) {
         std::cout << "  PASS: Blocklist & Trie Matching\n";
     } else {
         std::cout << "  PARTIAL: Blocklist & Trie Matching (failures detected)\n";
@@ -222,6 +230,7 @@ void testBlocklistTrieAndMatching() {
 }
 
 void testVPNDetection() {
+    const int failures_before = g_failures;
     std::cout << "[TEST] VPN Protocol Fingerprinting...\n";
 
     VPNDetector vpn;
@@ -258,6 +267,32 @@ void testVPNDetection() {
     CHECK(ovpn_res.detected);
     CHECK(ovpn_res.type == VPNType::OPENVPN);
 
+    // TCP OpenVPN records are length-prefixed byte streams and may be split
+    // across segments. The first fragment must remain undecided; the second
+    // completes and detects the record.
+    std::vector<uint8_t> tcp_part1 = {0x00, 0x05, 0x38};
+    std::vector<uint8_t> tcp_part2 = {0x01, 0x02, 0x03, 0x04};
+    PacketJob tcp_job;
+    tcp_job.tuple.protocol = 6;
+    tcp_job.tuple.src_ip = 0x0100000A;
+    tcp_job.tuple.dst_ip = 0x0200000A;
+    tcp_job.tuple.src_port = 1194;
+    tcp_job.tuple.dst_port = 50000;
+    tcp_job.payload_data = tcp_part1.data();
+    tcp_job.payload_length = tcp_part1.size();
+    CHECK(!vpn.detect(tcp_job).detected);
+    tcp_job.payload_data = tcp_part2.data();
+    tcp_job.payload_length = tcp_part2.size();
+    CHECK(vpn.detect(tcp_job).detected);
+
+    std::vector<uint8_t> short_udp = {0x38};
+    PacketJob short_udp_job;
+    short_udp_job.tuple.protocol = 17;
+    short_udp_job.tuple.src_port = 1194;
+    short_udp_job.payload_data = short_udp.data();
+    short_udp_job.payload_length = short_udp.size();
+    CHECK(!vpn.detect(short_udp_job).detected);
+
     // 3. IPSec ESP (Protocol 50)
     PacketJob esp_job;
     esp_job.tuple.protocol = 50;
@@ -282,7 +317,7 @@ void testVPNDetection() {
     CHECK(cidr_res.detected);
     CHECK(cidr_res.type == VPNType::VPN_IP_RANGE);
 
-    if (g_failures == 0) {
+    if (g_failures == failures_before) {
         std::cout << "  PASS: VPN Detection\n";
     } else {
         std::cout << "  PARTIAL: VPN Detection (failures detected)\n";
@@ -290,6 +325,7 @@ void testVPNDetection() {
 }
 
 void testBlocklistValidationAndBounds() {
+    const int failures_before = g_failures;
     std::cout << "[TEST] Blocklist Domain Validation, Bounded Capacity & Staleness...\n";
 
     // 1. Validation checks
@@ -338,7 +374,7 @@ void testBlocklistValidationAndBounds() {
     // Current data/urlhaus_sample.txt has today's date (2026-11-03) -> not stale
     CHECK(!Blocklist::checkStaleness("data/urlhaus_sample.txt", 7, &days_old));
 
-    if (g_failures == 0) {
+    if (g_failures == failures_before) {
         std::cout << "  PASS: Blocklist Domain Validation, Bounded Capacity & Staleness\n";
     } else {
         std::cout << "  PARTIAL: Blocklist Domain Validation, Bounded Capacity & Staleness (failures detected)\n";
@@ -346,6 +382,7 @@ void testBlocklistValidationAndBounds() {
 }
 
 void testVPNActionsAndCuratedRanges() {
+    const int failures_before = g_failures;
     std::cout << "[TEST] VPN Action (Flag-Only vs Block) & Curated CIDRs...\n";
 
     // 1. VPN Action modes
@@ -409,10 +446,50 @@ void testVPNActionsAndCuratedRanges() {
     auto res_norm = curated_vpn.detect(job_normal);
     CHECK(!res_norm.detected);
 
-    if (g_failures == 0) {
+    if (g_failures == failures_before) {
         std::cout << "  PASS: VPN Action Modes & Curated CIDRs\n";
     } else {
         std::cout << "  PARTIAL: VPN Action Modes & Curated CIDRs (failures detected)\n";
+    }
+}
+
+void testEventTelemetryCounters() {
+    const int failures_before = g_failures;
+    std::cout << "[TEST] Event telemetry counters...\n";
+
+    DPIStats engine_stats;
+    EventSink& sink = EventSink::instance();
+    sink.setConsoleAlerts(false);
+    sink.configureTelemetry(nullptr, &engine_stats);
+
+    AnomalyEvent anomaly;
+    anomaly.timestamp = 1000.0;
+    anomaly.type = AnomalyType::PORT_SCAN;
+    anomaly.src_ip = "10.0.0.1";
+    anomaly.target_ip = "10.0.0.2";
+    anomaly.count = 16;
+    anomaly.detail = "test";
+    sink.emitAnomaly(anomaly);
+
+    SecurityAlert alert{};
+    alert.timestamp = 1000.0;
+    alert.alert_type = "MALICIOUS";
+    alert.tuple = {0x0100000A, 0x0200000A, 1234, 80, 6};
+    alert.app_or_domain = "bad.example";
+    alert.blocked = true;
+    alert.reason = "MALICIOUS";
+    alert.detail = "test rule";
+    sink.emitAlert(alert);
+
+    CHECK(engine_stats.scan_alerts == 1);
+    CHECK(engine_stats.blocked_total == 1);
+
+    sink.configureTelemetry(nullptr, nullptr);
+    sink.setConsoleAlerts(true);
+    if (g_failures == failures_before) {
+        std::cout << "  PASS: Event telemetry counters\n";
+    } else {
+        std::cout << "  PARTIAL: Event telemetry counters (failures detected)\n";
     }
 }
 
@@ -430,11 +507,12 @@ int main() {
     testBlocklistValidationAndBounds();
     testVPNDetection();
     testVPNActionsAndCuratedRanges();
+    testEventTelemetryCounters();
 
     if (g_failures != 0) {
         std::cerr << "\n" << g_failures << " TRACK B TEST(S) FAILED\n";
         return 1;
     }
-    std::cout << "\nALL TRACK B UNIT TESTS PASSED SUCCESSFULLY! (9/9)\n";
+    std::cout << "\nALL TRACK B UNIT TESTS PASSED SUCCESSFULLY! (10/10)\n";
     return 0;
 }

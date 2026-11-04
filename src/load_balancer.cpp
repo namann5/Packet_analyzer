@@ -13,7 +13,7 @@ LoadBalancer::LoadBalancer(int lb_id,
                            int fp_start_id)
     : lb_id_(lb_id),
       fp_start_id_(fp_start_id),
-      num_fps_(fp_queues.size()),
+      num_fps_(static_cast<int>(fp_queues.size())),
       input_queue_(10000),
       fp_queues_(std::move(fp_queues)),
       // Size captured before the move above; the moved-from vector is empty.
@@ -130,7 +130,7 @@ LoadBalancer& LBManager::getLBForPacket(const FiveTuple& tuple) {
     // First level of load balancing: select LB based on hash
     FiveTupleHash hasher;
     size_t hash = hasher(tuple);
-    int lb_index = hash % lbs_.size();
+    int lb_index = static_cast<int>(hash % lbs_.size());
     return *lbs_[lb_index];
 }
 

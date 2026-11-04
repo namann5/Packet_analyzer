@@ -95,7 +95,7 @@ bool IPCEmitter::connect(const std::string& host, uint16_t port) {
     }
     host_ = host;
     port_ = port;
-    closeSocket();
+    closeSocketUnlocked();
     return true;
 }
 
@@ -105,6 +105,11 @@ void IPCEmitter::disconnect() {
 
 void IPCEmitter::closeSocket() {
     std::lock_guard<std::mutex> lock(socket_mutex_);
+    closeSocketUnlocked();
+}
+
+// Assumes socket_mutex_ is held by the caller.
+void IPCEmitter::closeSocketUnlocked() {
 #ifdef _WIN32
     if (sock_ != ~0ULL) {
         ::closesocket(static_cast<SOCKET>(sock_));

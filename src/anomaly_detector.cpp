@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <set>
 #include <algorithm>
+#include <limits>
 
 namespace DPI {
 
@@ -30,10 +31,34 @@ AnomalyDetector::AnomalyDetector(const Config& config)
     : config_(config) {
 }
 
+std::string registrableDomain(const std::vector<std::string>& labels) {
+    if (labels.size() < 2) return labels.empty() ? std::string() : labels.front();
+    static const std::unordered_set<std::string> compound_suffixes = {
+        "co.uk", "org.uk", "ac.uk", "com.au", "net.au", "co.jp"
+    };
+    const std::string suffix = labels[labels.size() - 2] + "." + labels.back();
+    if (compound_suffixes.find(suffix) != compound_suffixes.end() && labels.size() >= 3) {
+        return labels[labels.size() - 3] + "." + suffix;
+    }
+    return suffix;
+}
+
+AnomalyDetector::Config AnomalyDetector::getConfig() const {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    return config_;
+}
+
+void AnomalyDetector::setConfig(const Config& config) {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    config_ = config;
+}
+
 double AnomalyDetector::packetTimeSec(const PacketJob& job) {
-    if (job.ts_sec == 0 && job.ts_usec == 0) {
-        // Fallback to system steady clock if timestamp not set
-        auto now = std::chrono::steady_clock::now().time_since_epoch();
+    if (!job.timestamp_valid && job.ts_sec == 0 && job.ts_usec == 0) {
+        // A zero capture timestamp means the packet was not timestamped.
+        // Event timestamps are Unix time, so use the system clock here rather
+        // than exposing an unrelated monotonic uptime value.
+        auto now = std::chrono::system_clock::now().time_since_epoch();
         return std::chrono::duration<double>(now).count();
     }
     return static_cast<double>(job.ts_sec) + static_cast<double>(job.ts_usec) / 1000000.0;
@@ -108,6 +133,8 @@ void AnomalyDetector::reset() {
     {
         std::lock_guard<std::mutex> lock(dns_tunnel_mutex_);
         dns_tunnel_seen_.clear();
+        dns_tunnel_lru_.clear();
+        dns_tunnel_lru_map_.clear();
         unique_tunnel_domains_.clear();
     }
     {
@@ -145,11 +172,10 @@ bool AnomalyDetector::processPacket(const PacketJob& job) {
 }
 
 bool AnomalyDetector::checkPortScan(uint32_t src_ip, uint32_t dst_ip, uint16_t dst_port, double now_sec) {
+    const Config config = getConfig();
     std::lock_guard<std::mutex> lock(port_scan_mutex_);
 
-    // A zero cap disables port-scan tracking entirely; avoid an unbounded
-    // structure and the empty-LRU eviction path below.
-    if (config_.port_scan_max_entries == 0) {
+    if (config.port_scan_max_entries == 0 || config.port_scan_threshold == 0) {
         return false;
     }
 
@@ -160,7 +186,7 @@ bool AnomalyDetector::checkPortScan(uint32_t src_ip, uint32_t dst_ip, uint16_t d
     if (lru_it != port_scan_lru_map_.end()) {
         port_scan_lru_.erase(lru_it->second);
     } else {
-        if (port_scan_map_.size() >= config_.port_scan_max_entries && !port_scan_lru_.empty()) {
+        if (port_scan_map_.size() >= config.port_scan_max_entries && !port_scan_lru_.empty()) {
             // Evict oldest
             PortScanKey oldest = port_scan_lru_.back();
             port_scan_lru_.pop_back();
@@ -173,59 +199,54 @@ bool AnomalyDetector::checkPortScan(uint32_t src_ip, uint32_t dst_ip, uint16_t d
 
     PortScanEntry& entry = port_scan_map_[key];
 
-    // Prune entries older than sliding window
-    double cutoff = now_sec - config_.port_scan_window_sec;
-    entry.records.erase(
-        std::remove_if(entry.records.begin(), entry.records.end(),
-                       [cutoff](const PortRecord& r) { return r.timestamp < cutoff; }),
-        entry.records.end()
-    );
-
-    // Add current port record
-    entry.records.push_back({now_sec, dst_port});
-
-    // Count unique destination ports in current window
-    std::unordered_set<uint16_t> unique_ports;
-    for (const auto& r : entry.records) {
-        unique_ports.insert(r.port);
+    const double cutoff = now_sec - config.port_scan_window_sec;
+    for (auto it = entry.last_seen_ports.begin(); it != entry.last_seen_ports.end();) {
+        if (it->second < cutoff) {
+            it = entry.last_seen_ports.erase(it);
+        } else {
+            ++it;
+        }
     }
+    entry.last_seen_ports[dst_port] = now_sec;
 
-    if (unique_ports.size() > config_.port_scan_threshold) {
-        bool should_alert = (now_sec - entry.last_alert_time >= config_.port_scan_alert_cooldown);
+    const size_t unique_count = entry.last_seen_ports.size();
+    if (unique_count > config.port_scan_threshold) {
+        const bool should_alert = !entry.has_alerted ||
+            (now_sec - entry.last_alert_time >= config.port_scan_alert_cooldown);
         if (should_alert) {
             entry.last_alert_time = now_sec;
+            entry.has_alerted = true;
 
             AnomalyEvent event;
             event.timestamp = now_sec;
             event.type = AnomalyType::PORT_SCAN;
             event.src_ip = ipToString(src_ip);
             event.target_ip = ipToString(dst_ip);
-            event.count = static_cast<uint32_t>(unique_ports.size());
+            event.count = static_cast<uint32_t>(unique_count);
 
             std::ostringstream ss;
-            ss << unique_ports.size() << " distinct destination ports in "
-               << std::fixed << std::setprecision(1) << config_.port_scan_window_sec << "s window";
+            ss << unique_count << " distinct destination ports in "
+               << std::fixed << std::setprecision(1) << config.port_scan_window_sec << "s window";
             event.detail = ss.str();
 
             EventSink::instance().emitAnomaly(event);
 
-            if (config_.auto_block_port_scans) {
+            if (config.auto_block_port_scans) {
                 std::lock_guard<std::mutex> b_lock(blocked_ips_mutex_);
                 auto_blocked_ips_.insert(src_ip);
             }
         }
-        return config_.auto_block_port_scans; // Drop packet only if auto-block enabled
+        return config.auto_block_port_scans;
     }
 
     return false;
 }
 
 bool AnomalyDetector::checkSYNFlood(uint32_t dst_ip, double now_sec) {
+    const Config config = getConfig();
     std::lock_guard<std::mutex> lock(syn_flood_mutex_);
 
-    // A zero cap disables SYN-flood tracking entirely; avoid the empty-LRU
-    // eviction path below.
-    if (config_.syn_flood_max_entries == 0) {
+    if (config.syn_flood_max_entries == 0 || config.syn_flood_threshold == 0) {
         return false;
     }
 
@@ -234,7 +255,7 @@ bool AnomalyDetector::checkSYNFlood(uint32_t dst_ip, double now_sec) {
     if (lru_it != syn_flood_lru_map_.end()) {
         syn_flood_lru_.erase(lru_it->second);
     } else {
-        if (syn_flood_map_.size() >= config_.syn_flood_max_entries && !syn_flood_lru_.empty()) {
+        if (syn_flood_map_.size() >= config.syn_flood_max_entries && !syn_flood_lru_.empty()) {
             uint32_t oldest = syn_flood_lru_.back();
             syn_flood_lru_.pop_back();
             syn_flood_lru_map_.erase(oldest);
@@ -246,25 +267,32 @@ bool AnomalyDetector::checkSYNFlood(uint32_t dst_ip, double now_sec) {
 
     SYNFloodEntry& entry = syn_flood_map_[dst_ip];
 
-    // Prune entries older than sliding window
-    double cutoff = now_sec - config_.syn_flood_window_sec;
-    entry.syn_records.erase(
-        std::remove_if(entry.syn_records.begin(), entry.syn_records.end(),
-                       [cutoff](const SYNRecord& r) { return r.timestamp < cutoff; }),
-        entry.syn_records.end()
-    );
+    const double cutoff = now_sec - config.syn_flood_window_sec;
+    while (!entry.syn_records.empty() && entry.syn_records.front() < cutoff) {
+        entry.syn_records.pop_front();
+    }
+    entry.syn_records.push_back(now_sec);
 
-    // Add current SYN
-    entry.syn_records.push_back({now_sec});
+    // Keep a bounded sliding window even when a caller configures a very
+    // large rate threshold. The detector only needs threshold+1 samples to
+    // prove that the threshold was exceeded.
+    const size_t history_cap = config.syn_flood_threshold == std::numeric_limits<size_t>::max()
+        ? config.syn_flood_threshold
+        : config.syn_flood_threshold + 1;
+    while (entry.syn_records.size() > history_cap) {
+        entry.syn_records.pop_front();
+    }
 
     size_t count = entry.syn_records.size();
-    double window = config_.syn_flood_window_sec > 0.0 ? config_.syn_flood_window_sec : 1.0;
+    double window = config.syn_flood_window_sec > 0.0 ? config.syn_flood_window_sec : 1.0;
     double rate = static_cast<double>(count) / window;
 
-    if (rate > static_cast<double>(config_.syn_flood_threshold)) {
-        bool should_alert = (now_sec - entry.last_alert_time >= config_.syn_flood_alert_cooldown);
+    if (rate > static_cast<double>(config.syn_flood_threshold)) {
+        bool should_alert = !entry.has_alerted ||
+            (now_sec - entry.last_alert_time >= config.syn_flood_alert_cooldown);
         if (should_alert) {
             entry.last_alert_time = now_sec;
+            entry.has_alerted = true;
 
             AnomalyEvent event;
             event.timestamp = now_sec;
@@ -280,7 +308,7 @@ bool AnomalyDetector::checkSYNFlood(uint32_t dst_ip, double now_sec) {
 
             EventSink::instance().emitAnomaly(event);
         }
-        return config_.auto_block_syn_floods;
+        return config.auto_block_syn_floods;
     }
 
     return false;
@@ -288,6 +316,9 @@ bool AnomalyDetector::checkSYNFlood(uint32_t dst_ip, double now_sec) {
 
 bool AnomalyDetector::inspectDNSQuery(const PacketJob& job, const std::string& query) {
     if (query.empty()) return false;
+
+    const Config config = getConfig();
+    if (config.dns_tunnel_max_entries == 0) return false;
 
     auto labels = splitDomainLabels(query);
     if (labels.size() < 2) return false;
@@ -297,8 +328,8 @@ bool AnomalyDetector::inspectDNSQuery(const PacketJob& job, const std::string& q
     double entropy = calculateShannonEntropy(leftmost);
 
     // Heuristic: depth >= 4 AND (long label ~> 20 chars OR entropy ~> 4.0) -> DNS_TUNNEL
-    bool is_tunnel = (depth >= config_.dns_tunnel_min_depth) &&
-                     (leftmost.length() >= config_.dns_tunnel_min_label_len || entropy >= config_.dns_tunnel_min_entropy);
+    bool is_tunnel = (depth >= config.dns_tunnel_min_depth) &&
+                     (leftmost.length() >= config.dns_tunnel_min_label_len || entropy >= config.dns_tunnel_min_entropy);
 
     if (!is_tunnel) {
         return false;
@@ -306,43 +337,36 @@ bool AnomalyDetector::inspectDNSQuery(const PacketJob& job, const std::string& q
 
     double now_sec = packetTimeSec(job);
 
-    // Extract query pattern to suppress duplicate noise:
-    // Root pattern: last 2 labels, or if domain has >= 3 labels, last 2-3 labels
-    std::string root_pattern;
-    if (labels.size() >= 2) {
-        root_pattern = labels[labels.size() - 2] + "." + labels[labels.size() - 1];
-    } else {
-        root_pattern = query;
-    }
+    const std::string root_pattern = registrableDomain(labels);
 
     DNSTunnelKey key{job.tuple.src_ip, root_pattern};
 
     std::lock_guard<std::mutex> lock(dns_tunnel_mutex_);
     auto it = dns_tunnel_seen_.find(key);
-    bool should_alert = (it == dns_tunnel_seen_.end() || (now_sec - it->second >= config_.dns_tunnel_cooldown));
+    bool should_alert = (it == dns_tunnel_seen_.end() ||
+                         (now_sec - it->second >= config.dns_tunnel_cooldown));
 
     if (should_alert) {
         dns_tunnel_seen_[key] = now_sec;
+        if (it != dns_tunnel_seen_.end()) {
+            auto lru_it = dns_tunnel_lru_map_.find(key);
+            if (lru_it != dns_tunnel_lru_map_.end()) {
+                dns_tunnel_lru_.erase(lru_it->second);
+            }
+        }
+        dns_tunnel_lru_.push_front(key);
+        dns_tunnel_lru_map_[key] = dns_tunnel_lru_.begin();
         unique_tunnel_domains_.insert(query);
 
-        // Bound the tunneling state so a long-running capture cannot grow it
-        // without limit. Prune stale entries, then evict oldest by insertion.
-        if (config_.dns_tunnel_max_entries > 0) {
-            if (dns_tunnel_seen_.size() > config_.dns_tunnel_max_entries) {
-                for (auto it2 = dns_tunnel_seen_.begin(); it2 != dns_tunnel_seen_.end();) {
-                    if (now_sec - it2->second >= config_.dns_tunnel_cooldown) {
-                        it2 = dns_tunnel_seen_.erase(it2);
-                    } else {
-                        ++it2;
-                    }
-                }
-                while (dns_tunnel_seen_.size() > config_.dns_tunnel_max_entries) {
-                    dns_tunnel_seen_.erase(dns_tunnel_seen_.begin());
-                }
-            }
-            while (unique_tunnel_domains_.size() > config_.dns_tunnel_max_entries) {
-                unique_tunnel_domains_.erase(unique_tunnel_domains_.begin());
-            }
+        while (dns_tunnel_seen_.size() > config.dns_tunnel_max_entries &&
+               !dns_tunnel_lru_.empty()) {
+            const DNSTunnelKey oldest = dns_tunnel_lru_.back();
+            dns_tunnel_lru_.pop_back();
+            dns_tunnel_lru_map_.erase(oldest);
+            dns_tunnel_seen_.erase(oldest);
+        }
+        while (unique_tunnel_domains_.size() > config.dns_tunnel_max_entries) {
+            unique_tunnel_domains_.erase(unique_tunnel_domains_.begin());
         }
 
         AnomalyEvent event;

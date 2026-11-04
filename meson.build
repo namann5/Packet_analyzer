@@ -50,14 +50,26 @@ thread_dep = dependency('threads')
 # disabler. Only append pcap_dep when libpcap is actually available.
 live_capture = get_option('live_capture')
 pcap_deps = []
+pcap_include_dirs = []
 if live_capture
-  pcap_dep = dependency('libpcap', required: false)
-  if pcap_dep.found()
+  npcap_sdk = get_option('npcap_sdk')
+  if npcap_sdk != '' and host_machine.system() == 'windows'
     add_project_arguments('-DHAVE_LIBPCAP', language: 'cpp')
-    pcap_deps += pcap_dep
+    sdk_lib_dir = npcap_sdk / 'Lib' / (host_machine.cpu_family() == 'x86_64' ? 'x64' : 'x86')
+    pcap_deps += [
+      meson.get_compiler('cpp').find_library('wpcap', required: true, dirs: sdk_lib_dir),
+      meson.get_compiler('cpp').find_library('ws2_32', required: true),
+    ]
+    pcap_include_dirs += include_directories(npcap_sdk / 'Include')
   else
-    warning('libpcap not found - building without live capture support')
-    message('Install libpcap (Linux: libpcap-dev, Windows: Npcap SDK) to enable live capture')
+    pcap_dep = dependency('libpcap', required: false)
+    if pcap_dep.found()
+      add_project_arguments('-DHAVE_LIBPCAP', language: 'cpp')
+      pcap_deps += pcap_dep
+    else
+      warning('libpcap not found - building without live capture support')
+      message('Install libpcap (Linux: libpcap-dev, Windows: Npcap SDK) to enable live capture')
+    endif
   endif
 endif
 
@@ -70,11 +82,16 @@ endif
 # ---------------------------------------------------------------------------
 # DPI engine executable
 # ---------------------------------------------------------------------------
+engine_include_dirs = include_directories('include')
+if pcap_include_dirs.length() > 0
+  engine_include_dirs += pcap_include_dirs
+endif
+
 dpi_engine = executable(
   'dpi_engine',
   engine_sources,
   dependencies: [thread_dep] + pcap_deps + extra_deps + win_deps,
-  include_directories: include_directories('include'),
+  include_directories: engine_include_dirs,
   install: true,
 )
 
@@ -101,10 +118,11 @@ if get_option('tests')
       'src/blocklist.cpp',
       'src/vpn_detector.cpp',
       'src/events.cpp',
+      'src/ipc_emitter.cpp',
       'src/types.cpp',
       'src/packet_parser.cpp',
     ),
-    dependencies: [thread_dep] + win_deps,
+    dependencies: [thread_dep] + extra_deps + win_deps,
     include_directories: include_directories('include'),
   )
 endif
@@ -157,6 +175,8 @@ if get_option('tests')
       meson.current_source_dir() / 'test_malicious.pcap',
       meson.current_build_dir() / 'output_malicious.pcap',
       '--block-vpn',
+      '--urlhaus', meson.current_source_dir() / 'data' / 'urlhaus_test_sample.txt',
+      '--vpn-ranges', meson.current_source_dir() / 'data' / 'vpn_ranges.json',
       '--events-out', meson.current_build_dir() / 'events_test.jsonl',
     ],
     timeout: 30,

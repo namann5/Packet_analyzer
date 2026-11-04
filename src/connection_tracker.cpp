@@ -80,7 +80,7 @@ void ConnectionTracker::classifyConnection(Connection* conn, AppType app, const 
 }
 
 void ConnectionTracker::blockConnection(Connection* conn) {
-    if (!conn) return;
+    if (!conn || conn->state == ConnectionState::BLOCKED) return;
     
     conn->state = ConnectionState::BLOCKED;
     conn->action = PacketAction::DROP;

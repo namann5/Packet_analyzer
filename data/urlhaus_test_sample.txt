@@ -25,3 +25,16 @@ http://emotet-loader-node.net/spread.exe
 # Known malicious public IP host indicators (non-private)
 http://185.196.8.220/arm7
 http://45.154.255.10/bins/x86
+# Test domains (.test)
+http://bad-malware.test/bin.sh
+https://c2-server.evilcorp.test/endpoint
+http://ransomware-distrib.test/gate.php
+https://urlhaus-test-malware.test/download/payload.exe
+http://trojan-payload-drop.test/loader
+https://malicious-domain.test/bot.exe
+http://phishing-portal-bank.test/login.html
+http://botnet-command.test/cnc
+https://stealer-logs.test/panel
+http://cryptominer-pool.test/xmr.bin
+http://threat-actor-c2.test/api/beacon
+https://apt-backdoor-update.test/patch.zip

@@ -57,6 +57,8 @@ private:
     bool internalSend(const std::string& line);
     bool internalConnect();
     void closeSocket();
+    // Assumes socket_mutex_ is already held by the caller.
+    void closeSocketUnlocked();
 
 #ifdef _WIN32
     uintptr_t sock_{~0ULL}; // INVALID_SOCKET

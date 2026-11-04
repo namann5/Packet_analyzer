@@ -1,6 +1,6 @@
 # Packet_analyzer — Real-Time DPI System Project Plan
 
-**Status:** v1.2 — Track A (M0 + M1) & Track C (M4) delivered, dashboard + IPC verified
+**Status:** v1.2 - Tracks A (M1), B (M2+M3), C (M4) and M5 end-to-end delivered; live IPC + Windows Npcap capture verified
 **Lead:** Naman Singh (namann5)
 
 ## Contributors
@@ -38,7 +38,7 @@ The plan is split so each block is independently demoable and can be handed to o
 
 | Track | Owner (TBD) | Scope | Independent demo |
 |---|---|---|---|
-| **A — Capture + Rules** | ✅ delivered (§5) | libpcap live capture, PCAP↔live abstraction, persistent JSON rules, rules CLI, Meson build | `dpi_engine -i eth0` classes real packets; CRUD rules; survive restart |
+| **A — Capture + Rules** | ✅ delivered (§5) | libpcap live capture, PCAP→live abstraction, persistent JSON rules, rules CLI, Meson build | `dpi_engine -i eth0` classes real packets; CRUD rules; survive restart |
 | **B — Security** | ✅ delivered (§6) | Port scan, SYN flood, DNS tunneling detectors; URLhaus blocklist; VPN fingerprinting | Feed malicious pcap → detected & blocked; VPN traffic flagged `VPN_DETECTED` |
 | **C — Dashboard** | ✅ delivered (§7) | FastAPI + WebSocket + Chart.js, REST API, PDF/HTML reports, IPC bridge to C++ | Live-updating charts of blocked traffic, app breakdown, throughput; export report |
 
@@ -161,7 +161,7 @@ Every packet → classification → emits zero or more events; aggregated counte
 
 ### 6.3 DNS tunneling heuristics
 - For each DNS query (`DNSExtractor` output): compute
-  - subdomain depth (labels − 1)
+  - subdomain depth (labels ≥ 1)
   - total query name length and per-label length
   - Shannon entropy of the leftmost label
 - Heuristic: depth ≥ 4 AND (long label ~> 20 chars OR entropy ~> 4.0) → `DNS_TUNNEL`
