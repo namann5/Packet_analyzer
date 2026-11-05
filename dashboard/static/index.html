@@ -972,7 +972,7 @@ function normalizeConn(c) {
   const dstPort = ft.dst_port || c.dst_port || 0;
   const srcPort = ft.src_port || c.src_port || 0;
   const app = c.app || "Unknown";
-  const size = c.bytes || c.length || c.packet_len || 512;
+  const size = c.bytes || c.length || c.packet_len || 0;
   const blocked = !!c.blocked;
   const isAnomaly = c.event === 'anomaly';
   const reason = c.reason || (isAnomaly ? c.type : null);
