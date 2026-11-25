@@ -1,6 +1,6 @@
 # URLhaus Database (Sample Offline Fallback Blocklist)
 # Source: https://urlhaus.abuse.ch/downloads/text/
-# Generated at: 2026-11-03 08:00:00 UTC
+# Generated at: 2027-01-10 08:00:00 UTC
 #
 http://bad-malware-domain.com/bin.sh
 https://c2-server.evilcorp.biz/endpoint
