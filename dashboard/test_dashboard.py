@@ -652,3 +652,81 @@ def test_issue_9_handle_engine_connection_streaming():
     assert state.connections[0]["reason"] == "MALICIOUS"
 
 
+def test_health_endpoint():
+    """Verify Issue #15: GET /health returns 200 with uptime and IPC/engine status."""
+    client = TestClient(app)
+    for _ in range(3):
+        res = client.get("/health")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "ok"
+        assert isinstance(data["uptime_seconds"], (int, float))
+        assert data["uptime_seconds"] >= 0
+        assert isinstance(data["engine_connected"], bool)
+        assert isinstance(data["active_engine_connections"], int)
+        assert "ipc" in data
+        assert "host" in data["ipc"]
+        assert "port" in data["ipc"]
+        assert isinstance(data["ipc"]["listening"], bool)
+
+
+def test_graceful_shutdown_cleans_up_ipc_and_children():
+    """Verify Issue #15: shutdown closes IPC socket, active engine conns, and child processes."""
+    import subprocess
+    import sys as _sys
+    import dashboard.server as srv
+
+    async def _run():
+        # Start a temporary IPC server on an ephemeral port and register it
+        temp_server = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+        port = temp_server.sockets[0].getsockname()[1]
+        srv._ipc_server = temp_server
+        assert temp_server.is_serving()
+
+        # Open a client connection to simulate an active engine writer
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        srv._active_engine_conns.add(writer)
+
+        # Spawn a harmless child process and register it for supervision cleanup
+        proc = subprocess.Popen([_sys.executable, "-c", "import time; time.sleep(30)"])
+        srv.register_child_process(proc)
+        assert proc.poll() is None
+
+        try:
+            await srv.shutdown_ipc_and_children()
+            assert srv._ipc_server is None
+            assert not temp_server.is_serving()
+            assert len(srv._active_engine_conns) == 0
+            assert len(srv._supervised_processes) == 0
+            assert proc.poll() is not None
+        finally:
+            reader.feed_eof()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=2)
+
+    asyncio.run(_run())
+
+
+def test_lifespan_releases_ipc_port_on_restart():
+    """Verify lifespan startup/shutdown cleanly releases the IPC port so restart succeeds."""
+    import dashboard.server as srv
+
+    async def _run():
+        async with srv.lifespan(app):
+            await asyncio.sleep(0.05)
+            assert srv._ipc_server is not None
+            assert srv._ipc_server.is_serving()
+        assert srv._ipc_server is None
+
+        # Immediate restart should bind cleanly without port conflict
+        async with srv.lifespan(app):
+            await asyncio.sleep(0.05)
+            assert srv._ipc_server is not None
+            assert srv._ipc_server.is_serving()
+        assert srv._ipc_server is None
+
+    asyncio.run(_run())
+
+
+
