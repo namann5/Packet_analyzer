@@ -325,6 +325,47 @@ def _maybe_security_alert() -> dict | None:
 # ---------------------------------------------------------------------------
 
 _active_engine_conns: set[asyncio.StreamWriter] = set()
+_ipc_server: asyncio.AbstractServer | None = None
+_supervised_processes: set[Any] = set()
+_start_time: float = time.monotonic()
+
+
+def register_child_process(proc: Any) -> None:
+    """Register a supervised child process for cleanup on server shutdown."""
+    _supervised_processes.add(proc)
+
+
+async def shutdown_ipc_and_children() -> None:
+    """Close the IPC listening socket, active engine connections, and child processes."""
+    global _ipc_server
+    if _ipc_server is not None:
+        _ipc_server.close()
+        try:
+            await _ipc_server.wait_closed()
+        except Exception:
+            pass
+        _ipc_server = None
+
+    for writer in list(_active_engine_conns):
+        _active_engine_conns.discard(writer)
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+    for proc in list(_supervised_processes):
+        _supervised_processes.discard(proc)
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2.0)
+                except Exception:
+                    proc.kill()
+                    proc.wait(timeout=1.0)
+        except Exception:
+            pass
 
 
 async def handle_engine_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -377,13 +418,24 @@ async def ipc_bridge() -> None:
     """Dashboard-side TCP listener to accept engine connections (§4 topology).
     If port 9000 is occupied by an engine server, retries connecting as a client with backoff.
     """
+    global _ipc_server
     try:
         server = await asyncio.start_server(
             handle_engine_connection, ENGINE_HOST, ENGINE_PORT
         )
+        _ipc_server = server
         print(f"[ipc] Dashboard listening for C++ engine on {ENGINE_HOST}:{ENGINE_PORT}")
-        async with server:
-            await server.serve_forever()
+        try:
+            async with server:
+                await server.serve_forever()
+        finally:
+            if _ipc_server is server:
+                _ipc_server = None
+            server.close()
+            try:
+                await server.wait_closed()
+            except Exception:
+                pass
     except OSError:
         # Fallback if an engine is already running as a server on ENGINE_PORT
         print(f"[ipc] Port {ENGINE_PORT} in use; attempting outbound client connection...")
@@ -459,14 +511,22 @@ async def ws_broadcaster() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _start_time
+    _start_time = time.monotonic()
     # Start background tasks
     bridge_task = asyncio.create_task(ipc_bridge())
     mock_task = asyncio.create_task(mock_feeder())
     broadcast_task = asyncio.create_task(ws_broadcaster())
-    yield
-    bridge_task.cancel()
-    mock_task.cancel()
-    broadcast_task.cancel()
+    try:
+        yield
+    finally:
+        bridge_task.cancel()
+        mock_task.cancel()
+        broadcast_task.cancel()
+        await asyncio.gather(
+            bridge_task, mock_task, broadcast_task, return_exceptions=True
+        )
+        await shutdown_ipc_and_children()
 
 
 app = FastAPI(title="Packet Analyzer Dashboard", lifespan=lifespan)
@@ -478,6 +538,25 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # ---------------------------------------------------------------------------
 # REST endpoints
 # ---------------------------------------------------------------------------
+
+@app.get("/health")
+async def health_check() -> dict[str, Any]:
+    """Liveness and IPC readiness probe."""
+    uptime = max(0.0, round(time.monotonic() - _start_time, 2))
+    engine_conns = len(_active_engine_conns)
+    ipc_listening = _ipc_server is not None and _ipc_server.is_serving()
+    return {
+        "status": "ok",
+        "uptime_seconds": uptime,
+        "engine_connected": engine_conns > 0,
+        "active_engine_connections": engine_conns,
+        "ipc": {
+            "host": ENGINE_HOST,
+            "port": ENGINE_PORT,
+            "listening": ipc_listening,
+        },
+    }
+
 
 @app.get("/api/stats")
 async def get_stats() -> dict:
