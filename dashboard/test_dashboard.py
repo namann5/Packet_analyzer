@@ -276,12 +276,49 @@ def test_api_report_html():
         "bytes": 1000,
         "blocked": False,
     })
+    state.ingest({
+        "event": "security_alert",
+        "alert_type": "MALICIOUS",
+        "detail": "URLhaus match: malware-c2.example.com",
+        "app_or_domain": "malware-c2.example.com",
+        "blocked": True,
+        "reason": "MALICIOUS",
+    })
+    state.ingest({
+        "event": "security_alert",
+        "alert_type": "VPN_DETECTED",
+        "detail": "WireGuard detected (UDP:51820)",
+        "app_or_domain": "WireGuard",
+        "blocked": False,
+        "reason": "",
+    })
 
     res = client.get("/api/report?format=html")
     assert res.status_code == 200
     assert res.headers["content-type"].startswith("text/html")
     assert "DPI Report" in res.text
     assert "Google" in res.text
+    assert "Malicious Blocks" in res.text
+    assert "<h3>Malicious Blocks</h3><p>1</p>" in res.text
+    assert "VPN Detections" in res.text
+    assert "<h3>VPN Detections</h3><p>1</p><div class=\"sub\">Blocked: 0</div>" in res.text
+
+
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    import base64
+    import re
+    import zlib
+
+    chunks: list[str] = []
+    for raw_stream in re.findall(rb"stream\r?\n(.*?)endstream", pdf_bytes, re.S):
+        payload = raw_stream.strip()
+        if payload.endswith(b"~>"):
+            payload = base64.a85decode(b"<~" + payload, adobe=True)
+        try:
+            chunks.append(zlib.decompress(payload).decode("latin1", errors="ignore"))
+        except Exception:
+            chunks.append(payload.decode("latin1", errors="ignore"))
+    return "\n".join(chunks)
 
 
 def test_api_report_pdf():
@@ -293,11 +330,33 @@ def test_api_report_pdf():
         "blocked": True,
         "reason": "DOMAIN",
     })
+    state.ingest({
+        "event": "security_alert",
+        "alert_type": "MALICIOUS",
+        "detail": "URLhaus match: bad.xyz",
+        "app_or_domain": "bad.xyz",
+        "blocked": True,
+        "reason": "MALICIOUS",
+    })
+    state.ingest({
+        "event": "security_alert",
+        "alert_type": "VPN_DETECTED",
+        "detail": "OpenVPN detected on port 1194",
+        "app_or_domain": "OpenVPN",
+        "blocked": True,
+        "reason": "VPN_DETECTED",
+    })
 
     res = client.get("/api/report?format=pdf")
     assert res.status_code == 200
     assert res.headers["content-type"] == "application/pdf"
     assert res.content.startswith(b"%PDF")
+
+    pdf_text = _extract_pdf_text(res.content)
+    assert "(Malicious Blocks)" in pdf_text
+    assert "(VPN Detections)" in pdf_text
+    assert "(VPN Blocks)" in pdf_text
+    assert "(1)" in pdf_text
 
 
 # ============================================================================
@@ -965,4 +1024,25 @@ def test_issue_18_ws_reconnect_and_app_js_dedup():
     # Issue-20 architecture uses fetchInitialEvents() on reconnect; dedup via seenAlertKeys
     assert "fetchInitialEvents" in src
 
+
+# ============================================================================
+# 12. Issue #19 Verification: Stage 04 Cards and Badge Styles
+# ============================================================================
+
+def test_issue_19_stage04_cards_and_badge_styles():
+    """Verify Stage 04 stat cards, pills, and MALICIOUS/VPN_DETECTED badge styles exist cleanly."""
+    client = TestClient(app)
+    res = client.get("/")
+    assert res.status_code == 200
+    body = res.text
+
+    assert "<<<<<<<" not in body
+    assert ">>>>>>>" not in body
+    assert 'id="s-malicious"' in body
+    assert 'id="s-vpn"' in body
+    assert 'id="pill-malicious"' in body
+    assert 'id="pill-vpn"' in body
+    assert ".badge.MALICIOUS" in body
+    assert ".badge.VPN_DETECTED" in body
+    assert ".badge.VPN_FLAGGED" in body
 

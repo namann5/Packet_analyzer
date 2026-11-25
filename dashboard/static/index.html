@@ -1109,6 +1109,28 @@ body {
   justify-content: space-between;
 }
 
+/* Alert & Stage 04 Badges */
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  white-space: nowrap;
+  border: 1px solid;
+  border-radius: 3px;
+  margin-right: 6px;
+}
+.badge.PORT_SCAN    { color: #e3b341; border-color: rgba(227, 179, 65, 0.5); background: rgba(227, 179, 65, 0.12); }
+.badge.SYN_FLOOD    { color: var(--red); border-color: rgba(248, 81, 73, 0.5); background: rgba(248, 81, 73, 0.12); }
+.badge.DNS_TUNNEL   { color: #76e3ea; border-color: rgba(118, 227, 234, 0.5); background: rgba(118, 227, 234, 0.12); }
+.badge.MALICIOUS    { color: var(--red); border-color: rgba(248, 81, 73, 0.65); background: rgba(248, 81, 73, 0.18); }
+.badge.VPN_DETECTED { color: var(--red); border-color: rgba(248, 81, 73, 0.65); background: rgba(248, 81, 73, 0.18); }
+.badge.VPN_FLAGGED  { color: #e3b341; border-color: rgba(227, 179, 65, 0.6); background: rgba(227, 179, 65, 0.15); }
+.badge.OTHER        { color: var(--text-dim); border-color: var(--border); background: var(--bg2); }
+
+/* Protocol Dissection Tree */
 .proto-tree {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
@@ -1403,6 +1425,18 @@ body {
     <div class="tb-stat-box"><span class="lbl">Rate:</span><span class="val" id="tb-tput">0 bps</span></div>
     <div class="tb-stat-box"><span class="lbl">Vol:</span><span class="val" id="tb-buf">0 B</span></div>
     <div class="tb-stat-box"><span class="lbl">Blocked:</span><span class="val" id="tb-dropped">0</span></div>
+  </div>
+</div>
+
+<!-- ── Stage 04 Security Telemetry Bar ── -->
+<div class="stage04-bar">
+  <div class="stat-card danger">
+    <div class="label">// MALICIOUS BLOCKS</div>
+    <div class="value" id="s-malicious">0</div>
+  </div>
+  <div class="stat-card warn">
+    <div class="label">// VPN DETECTIONS</div>
+    <div class="value" id="s-vpn">0</div>
   </div>
 </div>
 
