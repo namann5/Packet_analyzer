@@ -443,6 +443,168 @@ async def get_events() -> list[dict[str, Any]]:
     """Recent anomaly/security events."""
     return list(state.events)
 
+# AI Analyst Agent endpoints
+@app.get("/api/ai/stats")
+async def get_ai_stats() -> dict[str, Any]:
+    """Get engine statistics for AI analyst agent."""
+    engine = state.engine
+    if engine:
+        stats = engine.get_stats()
+        return {
+            "total_packets": stats.total_packets,
+            "throughput_bps": stats.throughput_bps,
+            "total_bytes": stats.total_bytes,
+            "filtered_packets": stats.filtered_packets,
+            "scan_alerts": stats.scan_alerts,
+            "syn_flood_alerts": stats.syn_flood_alerts,
+            "dns_tunnel_alerts": stats.dns_tunnel_alerts,
+            "malicious_domain_blocks": stats.malicious_domain_blocks,
+            "vpn_detections": stats.vpn_detections,
+        }
+    return {}
+
+
+@app.get("/api/ai/events")
+async def get_ai_events(limit: int = 50) -> list[dict[str, Any]]:
+    """Get recent events for AI analyst agent."""
+    engine = state.engine
+    if engine:
+        events = engine.get_events(limit)
+        return [
+            {
+                "timestamp": e.timestamp,
+                "alert_type": e.alert_type,
+                "app_or_domain": e.app_or_domain,
+                "blocked": e.blocked,
+                "reason": e.reason,
+                "detail": e.detail,
+            }
+            for e in events
+        ]
+    return []
+
+
+@app.get("/api/ai/blocked")
+async def get_ai_blocked() -> list[dict[str, Any]]:
+    """Get blocked connections for AI analyst agent."""
+    engine = state.engine
+    if engine:
+        blocked = engine.get_blocked()
+        return [
+            {
+                "src_ip": b.src_ip,
+                "dst_ip": b.dst_ip,
+                "app_or_domain": b.app_or_domain,
+                "blocked": b.blocked,
+                "reason": b.reason,
+            }
+            for b in blocked
+        ]
+    return []
+
+
+@app.get("/api/ai/summary")
+async def get_ai_summary() -> dict[str, Any]:
+    """Get a summary for the AI analyst agent."""
+    engine = state.engine
+    if engine:
+        stats = engine.get_stats()
+        events = engine.get_events(limit=10)
+        blocked = engine.get_blocked()
+        return {
+            "stats": {
+                "scan_alerts": stats.scan_alerts if stats else 0,
+                "syn_flood_alerts": stats.syn_flood_alerts if stats else 0,
+                "dns_tunnel_alerts": stats.dns_tunnel_alerts if stats else 0,
+                "malicious_domain_blocks": stats.malicious_domain_blocks if stats else 0,
+                "vpn_detections": stats.vpn_detections if stats else 0,
+            },
+            "recent_events": [
+                {
+                    "alert_type": e.alert_type,
+                    "app_or_domain": e.app_or_domain,
+                    "blocked": e.blocked,
+                }
+                for e in events
+            ],
+            "blocked_connections": len(blocked) if blocked else 0,
+        }
+    return {}
+
+
+@app.get("/api/ai/suggest_block")
+async def suggest_block_rule(kind: str, value: str, reason: str) -> dict[str, str]:
+    """Propose a block rule for human approval.
+    
+    The AI analyst suggests a block rule. Human approval required.
+    Approval would call dpi_cli rule-add command.
+    """
+    engine = state.engine
+    if engine:
+        # Validate the rule kind
+        valid_kinds = {"src_ip", "dst_ip", "app", "domain", "port"}
+        if kind not in valid_kinds:
+            return {"error": f"Invalid rule kind: {kind}. Valid: {valid_kinds}"}
+        return {
+            "suggestion": f"Block {kind}={value} ({reason})",
+            "action": "dpi_cli rule-add --type {kind} --value {value}",
+            "requires_human_approval": True,
+        }
+    return {"error": "Engine not available"}
+
+
+@app.get("/api/ai/summary_v2")
+async def get_ai_summary_v2() -> dict[str, Any]:
+    """Enhanced summary with more detail for AI analyst."""
+    engine = state.engine
+    if engine:
+        stats = engine.get_stats()
+        events = engine.get_events(limit=20)
+        blocked = engine.get_blocked()
+        return {
+            "stats": {
+                "total_packets": stats.total_packets if stats else 0,
+                "throughput_bps": stats.throughput_bps if stats else 0,
+                "total_bytes": stats.total_bytes if stats else 0,
+                "scan_alerts": stats.scan_alerts if stats else 0,
+                "syn_flood_alerts": stats.syn_flood_alerts if stats else 0,
+                "dns_tunnel_alerts": stats.dns_tunnel_alerts if stats else 0,
+                "malicious_domain_blocks": stats.malicious_domain_blocks if stats else 0,
+                "vpn_detections": stats.vpn_detections if stats else 0,
+            },
+            "recent_events": [
+                {
+                    "timestamp": e.timestamp,
+                    "alert_type": e.alert_type,
+                    "app_or_domain": e.app_or_domain,
+                    "blocked": e.blocked,
+                    "reason": e.reason,
+                }
+                for e in events
+            ],
+            "blocked_connections": [
+                {
+                    "src_ip": b.src_ip,
+                    "dst_ip": b.dst_ip,
+                    "app_or_domain": b.app_or_domain,
+                    "blocked": b.blocked,
+                }
+                for b in blocked
+            ],
+            "engine_status": "active" if engine else "inactive",
+        }
+    return {}
+
+
+@app.get("/api/ai/health")
+async def ai_health_check() -> dict[str, str]:
+    """Health check for AI analyst agent."""
+    return {"status": "healthy", "message": "AI analyst agent endpoints available"}
+# AI analyst agent endpoints
+# AI analyst agent endpoints
+    """Recent anomaly/security events."""
+    return list(state.events)
+
 
 # ---------------------------------------------------------------------------
 # WebSocket live endpoint

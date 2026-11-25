@@ -187,6 +187,12 @@ public:
     void loadVPNRanges(const std::string& path);
     void setBlockVPN(bool block);
 
+// AI Analyst Agent endpoints (expose telemetry to Python/dashboard)
+    // These are called via FastAPI routes /api/ai/stats, /api/ai/events, /api/ai/blocked
+    DPIStats get_stats() const;
+    std::vector<SecurityAlert> get_events(int limit = 100) const;
+    std::vector<BlockedDomain> get_blocked() const;
+
 private:
     Config config_;
     

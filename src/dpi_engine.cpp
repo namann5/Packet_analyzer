@@ -826,4 +826,37 @@ void DPIEngine::printStatus() const {
     }
 }
 
+
+// AI Analyst Agent endpoints implementations
+// These are called via FastAPI routes /api/ai/stats, /api/ai/events, /api/ai/blocked
+
+DPIStats DPIEngine::get_stats() const {
+    std::lock_guard<std::mutex> lock(engine_stats_mutex_);
+    return engine_stats_;
+}
+
+std::vector<SecurityAlert> DPIEngine::get_events(int limit) const {
+    std::lock_guard<std::mutex> lock(events_mutex_);
+    std::vector<SecurityAlert> result;
+    if (events_.empty()) return result;
+    int count = std::min(limit, (int)events_.size());
+    for (int i = events_.size() - count; i < (int)events_.size(); i++) {
+        result.push_back(events_[i]);
+    }
+    return result;
+}
+
+std::vector<BlockedDomain> DPIEngine::get_blocked() const {
+    std::lock_guard<std::mutex> lock(blocked_mutex_);
+    std::vector<BlockedDomain> result = blocked_domains_;
+    return result;
+}
+
+// Add member variables for thread-safe access
+private:
+    mutable std::mutex engine_stats_mutex_;
+    mutable std::mutex events_mutex_;
+    mutable std::mutex blocked_mutex_;
+    std::vector<SecurityAlert> events_;
+    std::vector<BlockedDomain> blocked_domains_;
 } // namespace DPI
