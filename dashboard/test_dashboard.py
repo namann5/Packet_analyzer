@@ -43,6 +43,9 @@ def reset_state():
     state.scan_alerts = 0
     state.syn_flood_alerts = 0
     state.dns_tunnel_alerts = 0
+    state.malicious_domain_blocks = 0
+    state.vpn_detections = 0
+    state.vpn_blocks = 0
     state.connections.clear()
     state.events.clear()
 
@@ -273,12 +276,51 @@ def test_api_report_html():
         "bytes": 1000,
         "blocked": False,
     })
+    state.ingest({
+        "event": "security_alert",
+        "alert_type": "MALICIOUS",
+        "detail": "URLhaus match: malware-c2.example.com",
+        "app_or_domain": "malware-c2.example.com",
+        "blocked": True,
+        "reason": "MALICIOUS",
+    })
+    state.ingest({
+        "event": "security_alert",
+        "alert_type": "VPN_DETECTED",
+        "detail": "WireGuard detected (UDP:51820)",
+        "app_or_domain": "WireGuard",
+        "blocked": False,
+        "reason": "",
+    })
 
     res = client.get("/api/report?format=html")
     assert res.status_code == 200
     assert res.headers["content-type"].startswith("text/html")
     assert "DPI Report" in res.text
     assert "Google" in res.text
+    assert "Malicious Blocks" in res.text
+    assert "<h3>Malicious Blocks</h3><p>1</p>" in res.text
+    assert "VPN Detections" in res.text
+    assert "<h3>VPN Detections</h3><p>1</p>" in res.text
+    assert "VPN Blocks" in res.text
+    assert "<h3>VPN Blocks</h3><p>0</p>" in res.text
+
+
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    import base64
+    import re
+    import zlib
+
+    chunks: list[str] = []
+    for raw_stream in re.findall(rb"stream\r?\n(.*?)endstream", pdf_bytes, re.S):
+        payload = raw_stream.strip()
+        if payload.endswith(b"~>"):
+            payload = base64.a85decode(b"<~" + payload, adobe=True)
+        try:
+            chunks.append(zlib.decompress(payload).decode("latin1", errors="ignore"))
+        except Exception:
+            chunks.append(payload.decode("latin1", errors="ignore"))
+    return "\n".join(chunks)
 
 
 def test_api_report_pdf():
@@ -290,11 +332,35 @@ def test_api_report_pdf():
         "blocked": True,
         "reason": "DOMAIN",
     })
+    state.ingest({
+        "event": "security_alert",
+        "alert_type": "MALICIOUS",
+        "detail": "URLhaus match: bad.xyz",
+        "app_or_domain": "bad.xyz",
+        "blocked": True,
+        "reason": "MALICIOUS",
+    })
+    state.ingest({
+        "event": "security_alert",
+        "alert_type": "VPN_DETECTED",
+        "detail": "OpenVPN detected on port 1194",
+        "app_or_domain": "OpenVPN",
+        "blocked": True,
+        "reason": "VPN_DETECTED",
+    })
 
     res = client.get("/api/report?format=pdf")
     assert res.status_code == 200
     assert res.headers["content-type"] == "application/pdf"
     assert res.content.startswith(b"%PDF")
+
+    pdf_text = _extract_pdf_text(res.content)
+    assert "Malicious Domain Blocks:" in pdf_text
+    assert "(Malicious Domain Blocks:) Tj /F1 10 Tf ( 1) Tj" in pdf_text
+    assert "VPN Detections:" in pdf_text
+    assert "(VPN Detections:) Tj /F1 10 Tf ( 1) Tj" in pdf_text
+    assert "VPN Blocks:" in pdf_text
+    assert "(VPN Blocks:) Tj /F1 10 Tf ( 1) Tj" in pdf_text
 
 
 # ============================================================================
@@ -650,5 +716,24 @@ def test_issue_9_handle_engine_connection_streaming():
     assert len(state.connections) == 1
     assert state.connections[0]["blocked"] is True
     assert state.connections[0]["reason"] == "MALICIOUS"
+
+
+def test_issue_19_stage04_cards_and_badge_styles():
+    """Verify Stage 04 stat cards, pills, and MALICIOUS/VPN_DETECTED badge styles exist cleanly."""
+    client = TestClient(app)
+    res = client.get("/")
+    assert res.status_code == 200
+    body = res.text
+
+    assert "<<<<<<<" not in body
+    assert ">>>>>>>" not in body
+    assert 'id="s-malicious"' in body
+    assert 'id="s-vpn"' in body
+    assert 'id="pill-malicious"' in body
+    assert 'id="pill-vpn"' in body
+    assert ".badge.MALICIOUS" in body
+    assert ".badge.VPN_DETECTED" in body
+    assert ".badge.VPN_FLAGGED" in body
+
 
 
