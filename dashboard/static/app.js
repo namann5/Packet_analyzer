@@ -466,6 +466,8 @@ function connect() {
     statusDot.classList.add("live");
     statusText.textContent = "LIVE";
     showToast("ENGINE CONNECTED — MONITORING ACTIVE");
+    // Catch up on any alerts emitted before connect / during a dropped socket
+    pollEvents();
   };
 
   ws.onclose = () => {
@@ -518,8 +520,14 @@ async function pollConnections() {
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 initCharts();
+pollEvents();
 connect();
 pollConnections();
-setInterval(pollEvents, 8000);
+// Keep /api/events poll strictly as a fallback when WebSocket is disconnected
+setInterval(() => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    pollEvents();
+  }
+}, 8000);
 setInterval(pollConnections, 3000);
 
