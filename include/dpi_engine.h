@@ -59,6 +59,14 @@ namespace DPI {
 class DPIEngine {
 public:
     // Configuration
+    struct BlockedDomain {
+        std::string src_ip;
+        std::string dst_ip;
+        std::string app_or_domain;
+        bool blocked;
+        std::string reason;
+    };
+
     struct Config {
         int num_load_balancers = 2;
         int fps_per_lb = 2;
@@ -95,28 +103,28 @@ public:
         // Auto-stop live capture after N seconds (0 = run until Ctrl+C).
         uint32_t duration_sec = 0;
     };
-    
+
     DPIEngine(const Config& config);
     ~DPIEngine();
-    
+
     // Initialize the engine (create threads, queues)
     bool initialize();
-    
+
     // Process a PCAP file
     // input_file: Path to input PCAP (user traffic)
     // output_file: Path to output PCAP (forwarded traffic)
-    bool processFile(const std::string& input_file, 
+    bool processFile(const std::string& input_file,
                      const std::string& output_file);
-    
+
     // Capture live traffic from an interface.
     // interface: network device name (e.g. "eth0")
     // output_file: optional output PCAP (empty string = no capture output)
     bool processLive(const std::string& iface_name,
                      const std::string& output_file = "");
-    
+
     // Start the engine (starts all threads)
     void start();
-    
+
     // Stop the engine (stops all threads)
     void stop();
 
@@ -126,54 +134,54 @@ public:
 
     // Check if live capture has been requested to stop.
     bool captureStopped() const { return stop_capture_.load(); }
-    
+
     // Wait for processing to complete
     void waitForCompletion();
-    
+
     // ========== Rule Management ==========
-    
+
     // Block an IP address
     void blockIP(const std::string& ip);
-    
+
     // Unblock an IP address
     void unblockIP(const std::string& ip);
-    
+
     // Block an application
     void blockApp(AppType app);
     void blockApp(const std::string& app_name);
-    
+
     // Unblock an application
     void unblockApp(AppType app);
     void unblockApp(const std::string& app_name);
-    
+
     // Block a domain
     void blockDomain(const std::string& domain);
-    
+
     // Unblock a domain
     void unblockDomain(const std::string& domain);
-    
+
     // Load rules from file
     bool loadRules(const std::string& filename);
-    
+
     // Save rules to file
     bool saveRules(const std::string& filename);
-    
+
     // ========== Reporting ==========
-    
+
     // Generate full statistics report
     std::string generateReport() const;
-    
+
     // Generate classification report (app distribution)
     std::string generateClassificationReport() const;
-    
+
     // Get real-time statistics
     const DPIStats& getStats() const;
-    
+
     // Print live status
     void printStatus() const;
-    
+
     // ========== Accessors ==========
-    
+
     RuleManager& getRuleManager() { return *rule_manager_; }
     AnomalyDetector& getAnomalyDetector() { return *anomaly_detector_; }
     Blocklist& getBlocklist() { return *blocklist_; }
@@ -187,15 +195,15 @@ public:
     void loadVPNRanges(const std::string& path);
     void setBlockVPN(bool block);
 
-// AI Analyst Agent endpoints (expose telemetry to Python/dashboard)
+    // AI Analyst Agent endpoints (expose telemetry to Python/dashboard)
     // These are called via FastAPI routes /api/ai/stats, /api/ai/events, /api/ai/blocked
-    DPIStats get_stats() const;
+    const DPIStats& get_stats() const;
     std::vector<SecurityAlert> get_events(int limit = 100) const;
     std::vector<BlockedDomain> get_blocked() const;
 
 private:
     Config config_;
-    
+
     // Shared components
     std::unique_ptr<RuleManager> rule_manager_;
     std::unique_ptr<AnomalyDetector> anomaly_detector_;
@@ -203,52 +211,61 @@ private:
     std::unique_ptr<VPNDetector> vpn_detector_;
     std::unique_ptr<GlobalConnectionTable> global_conn_table_;
     std::unique_ptr<IPCEmitter> ipc_emitter_;
-    
+
     // Thread pools
     std::unique_ptr<FPManager> fp_manager_;
     std::unique_ptr<LBManager> lb_manager_;
-    
+
     // Output handling
     ThreadSafeQueue<PacketJob> output_queue_;
     std::thread output_thread_;
     std::ofstream output_file_;
     std::mutex output_mutex_;
-    
+
     // Statistics
     DPIStats stats_;
 
     // Snapshot capture-layer statistics while the source is still alive.
     // Never retain a pointer to processFile/processLive's stack-local source.
     CaptureStats capture_stats_{};
+
+    // AI Analyst Agent endpoints (expose telemetry to Python/dashboard)
+    mutable std::mutex engine_stats_mutex_;
+    mutable std::mutex events_mutex_;
+    mutable std::mutex blocked_mutex_;
+    DPIStats engine_stats_;
+    std::vector<SecurityAlert> events_;
+    std::vector<BlockedDomain> blocked_domains_;
+
     bool capture_stats_available_{false};
-    
+
     // Control
     std::atomic<bool> running_{false};
     std::atomic<bool> processing_complete_{false};
     std::atomic<bool> stop_capture_{false};
     std::atomic<bool> reader_finished_{false};
-    
+
     // Reader thread (separate for PCAP input)
     std::thread reader_thread_;
     std::thread ipc_thread_;
-    
+
     // Output & IPC handling
     void outputThreadFunc();
     void ipcThreadFunc();
     void handleOutput(const PacketJob& job, PacketAction action);
-    
+
     // Write PCAP header to output file
     bool writeOutputHeader(const PacketAnalyzer::PcapGlobalHeader& header);
-    
+
     // Write a packet to output file
     void writeOutputPacket(const PacketJob& job);
-    
+
     // Shared processing entry for file and live sources.
     bool runCapture(CaptureSource& source, const std::string& output_file);
 
     // Reader loop generic over the capture source.
     void readerThreadLoop(CaptureSource* source);
-    
+
     // Convert ParsedPacket to PacketJob
     PacketJob createPacketJob(const CapturePacket& raw,
                                const PacketAnalyzer::ParsedPacket& parsed,

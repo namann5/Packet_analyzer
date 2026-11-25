@@ -82,7 +82,7 @@ endif
 # ---------------------------------------------------------------------------
 # DPI engine executable
 # ---------------------------------------------------------------------------
-engine_include_dirs = include_directories('include')
+engine_include_dirs = [include_directories('include')]
 if pcap_include_dirs.length() > 0
   engine_include_dirs += pcap_include_dirs
 endif

@@ -71,7 +71,7 @@ bool LiveCapture::open(const std::string& iface_name, std::string& error) {
         return false;
     }
     pcap_set_timeout(p, 100);        // read timeout (ms)
-    if (buffer_size_ > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+    if (buffer_size_ > static_cast<uint32_t>((std::numeric_limits<int>::max)())) {
         error = "Capture buffer size exceeds libpcap's signed int limit";
         pcap_close(p);
         return false;
