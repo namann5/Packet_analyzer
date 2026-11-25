@@ -258,4 +258,4 @@ Protocol fingerprinting:
 - [ ] Assign B / C owners (§2)
 - [ ] Unblock Track B with its demo criteria (§6.6)
 - [x] Unblock Track C with its demo criteria (§7.4)
-- [ ] Decide SQLite backend for rules (backlog, §5.2)
+- [x] Decide SQLite backend for rules (backlog, §5.2) — deferred; JSON store selected for zero-dependency portability. Bundled sqlite3.c amalgamation option retained for future M6 gate (PLAN §9.4).
