@@ -370,16 +370,6 @@ body {
   transition: background .08s ease;
 }
 
-<<<<<<< HEAD
-    /* ── Stat row ────────────────────────────────────────── */
-    .stat-grid {
-      display: grid;
-      grid-template-columns: repeat(8, 1fr);
-      border-bottom: 1px solid var(--border);
-    }
-    @media(max-width:1100px){ .stat-grid{ grid-template-columns: repeat(4,1fr); } }
-    @media(max-width:650px) { .stat-grid{ grid-template-columns: repeat(2,1fr); } }
-=======
 /* Authentic Row states from reference */
 .pkt-table tr.row-captured:hover td {
   background: rgba(56, 139, 253, 0.08);
@@ -400,7 +390,6 @@ body {
   background: rgba(56, 139, 253, 0.28) !important;
   color: #ffffff !important;
 }
->>>>>>> 196de63 (feat(dashboard): redesign dashboard UI to enterprise Wireshark packet analyzer)
 
 /* Protocol Badges */
 .proto-badge {
@@ -619,23 +608,67 @@ body {
   justify-content: space-between;
 }
 
-<<<<<<< HEAD
-    .ts { color: var(--text-dim); white-space: nowrap; font-size: 0.68rem; }
-    .badge {
-      display: inline-block; padding: 0px 6px;
-      font-size: 0.65rem; font-weight: 700;
-      letter-spacing: .05em; white-space: nowrap;
-      border: 1px solid; border-radius: 1px;
-    }
-    .badge.PORT_SCAN    { color: #ff9f00; border-color: #ff9f00; }
-    .badge.SYN_FLOOD    { color: var(--red); border-color: var(--red); }
-    .badge.DNS_TUNNEL   { color: #00e5ff; border-color: #00e5ff; }
-    .badge.MALICIOUS    { color: var(--red); border-color: var(--red); }
-    .badge.VPN_DETECTED { color: var(--red); border-color: var(--red); }
-    .badge.VPN_FLAGGED  { color: #ff9f00; border-color: #ff9f00; }
-    .badge.OTHER        { color: var(--text-dim); border-color: var(--text-dim); }
-    .alert-detail { color: #1a6e1a; word-break: break-all; }
-=======
+/* Alert & Stage 04 Badges */
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  white-space: nowrap;
+  border: 1px solid;
+  border-radius: 3px;
+  margin-right: 6px;
+}
+.badge.PORT_SCAN    { color: #e3b341; border-color: rgba(227, 179, 65, 0.5); background: rgba(227, 179, 65, 0.12); }
+.badge.SYN_FLOOD    { color: var(--red); border-color: rgba(248, 81, 73, 0.5); background: rgba(248, 81, 73, 0.12); }
+.badge.DNS_TUNNEL   { color: #76e3ea; border-color: rgba(118, 227, 234, 0.5); background: rgba(118, 227, 234, 0.12); }
+.badge.MALICIOUS    { color: var(--red); border-color: rgba(248, 81, 73, 0.65); background: rgba(248, 81, 73, 0.18); }
+.badge.VPN_DETECTED { color: var(--red); border-color: rgba(248, 81, 73, 0.65); background: rgba(248, 81, 73, 0.18); }
+.badge.VPN_FLAGGED  { color: #e3b341; border-color: rgba(227, 179, 65, 0.6); background: rgba(227, 179, 65, 0.15); }
+.badge.OTHER        { color: var(--text-dim); border-color: var(--border); background: var(--bg2); }
+
+/* Stage 04 Stat Cards Strip */
+.stage04-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 16px;
+  background: #0d121b;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.stage04-bar .stat-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.stage04-bar .stat-card.danger {
+  border-color: rgba(248, 81, 73, 0.45);
+  background: rgba(248, 81, 73, 0.08);
+}
+.stage04-bar .stat-card.warn {
+  border-color: rgba(227, 179, 65, 0.45);
+  background: rgba(227, 179, 65, 0.08);
+}
+.stage04-bar .stat-card .label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: .04em;
+}
+.stage04-bar .stat-card .value {
+  font-size: 13px;
+  font-weight: 700;
+  color: #f0f6fc;
+}
+
 /* Protocol Dissection Tree */
 .proto-tree {
   font-family: 'JetBrains Mono', monospace;
@@ -691,7 +724,6 @@ body {
 .tree-val {
   color: var(--text);
 }
->>>>>>> 196de63 (feat(dashboard): redesign dashboard UI to enterprise Wireshark packet analyzer)
 
 /* Hex & ASCII Dump */
 .hex-dump {
@@ -833,6 +865,18 @@ body {
   </div>
 </div>
 
+<!-- ── Stage 04 Security Telemetry Bar ── -->
+<div class="stage04-bar">
+  <div class="stat-card danger">
+    <div class="label">// MALICIOUS BLOCKS</div>
+    <div class="value" id="s-malicious">0</div>
+  </div>
+  <div class="stat-card warn">
+    <div class="label">// VPN DETECTIONS</div>
+    <div class="value" id="s-vpn">0</div>
+  </div>
+</div>
+
 <!-- ── Main Workspace Area ── -->
 <div class="main-area">
 
@@ -930,10 +974,6 @@ body {
       </div>
     </div>
   </div>
-  <div class="stat-card warn">
-    <div class="label">// VPN DETECTIONS</div>
-    <div class="value" id="s-vpn">0</div>
-  </div>
 </div>
 
 <!-- ── Footer Status Bar ── -->
@@ -1010,7 +1050,9 @@ function normalizeConn(c) {
   const size = c.bytes || c.length || c.packet_len || 512;
   const blocked = !!c.blocked;
   const isAnomaly = c.event === 'anomaly';
-  const reason = c.reason || (isAnomaly ? c.type : null);
+  const isSecurityAlert = c.event === 'security_alert';
+  const alertType = c.alert_type || c.type || c.reason || (isSecurityAlert ? 'OTHER' : null);
+  const reason = c.reason || (isAnomaly ? c.type : (isSecurityAlert ? alertType : null));
 
   // Derive protocol badge
   let proto = rawProto;
@@ -1018,10 +1060,31 @@ function normalizeConn(c) {
   else if (dstPort === 443) proto = 'TLS';
   else if (dstPort === 80) proto = 'HTTP';
 
+  let badgeClass = '';
+  let badgeText = '';
+  if (isSecurityAlert || reason === 'MALICIOUS' || reason === 'VPN_DETECTED') {
+    if (alertType === 'VPN_DETECTED' || reason === 'VPN_DETECTED') {
+      badgeClass = blocked ? 'VPN_DETECTED' : 'VPN_FLAGGED';
+      badgeText = blocked ? 'VPN_DETECTED' : 'VPN_FLAGGED';
+    } else if (alertType === 'MALICIOUS' || reason === 'MALICIOUS') {
+      badgeClass = 'MALICIOUS';
+      badgeText = 'MALICIOUS';
+    } else if (alertType) {
+      badgeClass = alertType;
+      badgeText = alertType;
+    }
+  } else if (isAnomaly && c.type) {
+    badgeClass = c.type;
+    badgeText = c.type;
+  }
+
   // Construct genuine Info string from actual event fields
   let info = '';
   if (c.info) {
     info = c.info;
+  } else if (isSecurityAlert) {
+    const detailText = typeof c.detail === 'string' ? c.detail : (c.app_or_domain || alertType || 'Security Alert');
+    info = `${blocked ? '🛑' : '⚠️'} ${detailText}`;
   } else if (isAnomaly) {
     info = `⚠️ ALERT: ${c.type || 'Anomaly'} detected from ${src}`;
   } else if (blocked) {
@@ -1050,8 +1113,10 @@ function normalizeConn(c) {
     info: info,
     blocked: blocked,
     reason: reason,
-    alert: isAnomaly || blocked,
-    status: blocked ? 'Dropped' : (isAnomaly ? 'Warning' : 'Captured')
+    badgeClass: badgeClass,
+    badgeText: badgeText,
+    alert: isAnomaly || isSecurityAlert || blocked,
+    status: blocked ? 'Dropped' : ((isAnomaly || isSecurityAlert) ? 'Warning' : 'Captured')
   };
 }
 
@@ -1072,13 +1137,17 @@ function addPacketRow(p, isPrepend = false) {
 
   const statusClass = p.blocked ? 'status-dropped' : (p.alert ? 'status-warning' : 'status-captured');
 
+  const badgeHtml = p.badgeText
+    ? `<span class="badge ${p.badgeClass}">${p.badgeText}</span>`
+    : '';
+
   tr.innerHTML = `
     <td style="color:var(--text-dim)">${fmtTime(p.timestamp)}</td>
     <td style="color:#f0f6fc;font-weight:500">${p.src_ip}</td>
     <td style="color:var(--text-dim)"><span style="opacity:0.6">→</span> ${p.dst_ip}</td>
     <td><span class="proto-badge proto-${p.protocol}">${p.protocol}</span></td>
     <td class="r" style="color:var(--text-dim)">${p.size}</td>
-    <td style="color:inherit;max-width:240px;overflow:hidden;text-overflow:ellipsis" title="${p.info}">${p.info}</td>
+    <td style="color:inherit;max-width:240px;overflow:hidden;text-overflow:ellipsis" title="${p.info}">${badgeHtml}${p.info}</td>
     <td><span class="status-pill ${statusClass}">${p.status}</span></td>
   `;
 
@@ -1277,6 +1346,7 @@ const networkNodes = {};
 const networkLinks = [];
 
 function initGraph() {
+  if (typeof d3 === 'undefined') return;
   const container = document.getElementById('network-map');
   const width = container.clientWidth || 600;
   const height = container.clientHeight || 450;
@@ -1366,6 +1436,7 @@ function getNodeMeta(id) {
 }
 
 function addNetworkConnection(srcIp, dstIp, isBlocked = false) {
+  if (typeof d3 === 'undefined' || !simulation) return;
   if (!srcIp || !dstIp || srcIp === '-' || dstIp === '-') return;
 
   if (!networkNodes[srcIp]) {
@@ -1527,8 +1598,8 @@ function connectWebSocket() {
           return;
         }
 
-        // Live connection or anomaly event from engine
-        if (data.event === 'app_classified' || data.event === 'anomaly') {
+        // Live connection, anomaly, or security alert event from engine
+        if (data.event === 'app_classified' || data.event === 'anomaly' || data.event === 'security_alert') {
           const norm = normalizeConn(data);
           connStore.unshift(norm);
           if (connStore.length > 200) connStore.pop();
@@ -1584,6 +1655,10 @@ function updateStatsUI(d) {
   const scansEl = document.getElementById('pill-scans');
   const floodsEl = document.getElementById('pill-floods');
   const tunnelsEl = document.getElementById('pill-tunnels');
+  const maliciousPillEl = document.getElementById('pill-malicious');
+  const vpnPillEl = document.getElementById('pill-vpn');
+  const maliciousCardEl = document.getElementById('s-malicious');
+  const vpnCardEl = document.getElementById('s-vpn');
   if (scansEl) {
     scansEl.textContent = `Scans: ${d.scan_alerts || 0}`;
     scansEl.className = (d.scan_alerts || 0) > 0 ? 'sec-pill warn' : 'sec-pill';
@@ -1595,6 +1670,22 @@ function updateStatsUI(d) {
   if (tunnelsEl) {
     tunnelsEl.textContent = `Tunnels: ${d.dns_tunnel_alerts || 0}`;
     tunnelsEl.className = (d.dns_tunnel_alerts || 0) > 0 ? 'sec-pill warn' : 'sec-pill';
+  }
+  if (maliciousPillEl) {
+    const malCount = d.malicious_domain_blocks || 0;
+    maliciousPillEl.textContent = `Malicious Blocks: ${malCount}`;
+    maliciousPillEl.className = malCount > 0 ? 'sec-pill warn' : 'sec-pill';
+  }
+  if (vpnPillEl) {
+    const vpnCount = d.vpn_detections || 0;
+    vpnPillEl.textContent = `VPN Detections: ${vpnCount}`;
+    vpnPillEl.className = vpnCount > 0 ? 'sec-pill warn' : 'sec-pill';
+  }
+  if (maliciousCardEl) {
+    maliciousCardEl.textContent = (d.malicious_domain_blocks || 0).toLocaleString();
+  }
+  if (vpnCardEl) {
+    vpnCardEl.textContent = (d.vpn_detections || 0).toLocaleString();
   }
 
   // Footer status bar
@@ -1715,6 +1806,7 @@ function exportReport(format) {
 // ── Startup ───────────────────────────────────────────────────────
 window.addEventListener('load', () => {
   initGraph();
+  fetchStats();
   fetchInitialConnections();
   fetchInitialEvents();
   connectWebSocket();
