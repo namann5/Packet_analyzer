@@ -861,4 +861,108 @@ def test_lifespan_releases_ipc_port_on_restart():
     asyncio.run(_run())
 
 
+# ============================================================================
+# 11. Issue #18 Verification: WebSocket Push Alerts
+# ============================================================================
+
+def test_issue_18_ws_broadcasts_anomaly_and_security_alert():
+    """Verify Issue #18: anomaly and security_alert frames are broadcast immediately over WS."""
+    from dashboard.server import manager
+
+    sent_frames: list[dict] = []
+
+    class DummyWS:
+        async def send_json(self, data: dict):
+            sent_frames.append(data)
+
+    dummy_ws = DummyWS()
+
+    async def _run():
+        manager._clients.add(dummy_ws)
+        try:
+            events = [
+                {
+                    "event": "anomaly",
+                    "ts": 1710000010.0,
+                    "type": "PORT_SCAN",
+                    "detail": {"src_ip": "10.0.0.66", "target": "10.0.0.1"},
+                },
+                {
+                    "event": "security_alert",
+                    "ts": 1710000011.0,
+                    "alert_type": "MALICIOUS",
+                    "detail": "URLhaus match: bad.example",
+                    "app_or_domain": "bad.example",
+                    "blocked": True,
+                    "reason": "MALICIOUS",
+                },
+                {
+                    "event": "security_alert",
+                    "ts": 1710000012.0,
+                    "alert_type": "VPN_DETECTED",
+                    "detail": "WireGuard detected",
+                    "app_or_domain": "WireGuard",
+                    "blocked": False,
+                    "reason": "",
+                },
+            ]
+            raw = "\n".join(json.dumps(e) for e in events).encode("utf-8") + b"\n"
+            reader = asyncio.StreamReader()
+            reader.feed_data(raw)
+            reader.feed_eof()
+
+            class MockWriter:
+                def get_extra_info(self, name):
+                    return ("127.0.0.1", 9000)
+                def close(self):
+                    pass
+                async def wait_closed(self):
+                    pass
+
+            await handle_engine_connection(reader, MockWriter())
+        finally:
+            manager._clients.discard(dummy_ws)
+
+    asyncio.run(_run())
+
+    assert len(sent_frames) == 3
+    assert [f["event"] for f in sent_frames] == ["anomaly", "security_alert", "security_alert"]
+    assert all("id" in f for f in sent_frames)
+    assert len({f["id"] for f in sent_frames}) == 3
+
+
+def test_issue_18_ws_reconnect_and_app_js_dedup():
+    """Verify WS reconnect resumes cleanly and app.js uses pollEvents as reconnect/fallback."""
+    client = TestClient(app)
+
+    with client.websocket_connect("/ws") as ws1:
+        snap1 = ws1.receive_json()
+        assert snap1["total_packets"] == 0
+
+    # Alert arrives while socket is dropped
+    state.ingest({
+        "event": "security_alert",
+        "alert_type": "MALICIOUS",
+        "detail": "c2.bad.xyz",
+        "app_or_domain": "c2.bad.xyz",
+        "blocked": True,
+        "reason": "MALICIOUS",
+    })
+
+    # Reconnect receives updated snapshot and /api/events exposes stable id for dedup
+    with client.websocket_connect("/ws") as ws2:
+        snap2 = ws2.receive_json()
+        assert snap2["malicious_domain_blocks"] == 1
+
+    events = client.get("/api/events").json()
+    assert len(events) == 1
+    assert "id" in events[0]
+
+    app_js = os.path.join(os.path.dirname(__file__), "static", "app.js")
+    with open(app_js, encoding="utf-8") as f:
+        src = f.read()
+    assert "seenAlertKeys" in src  # issue-20 renamed seenEventKeys → seenAlertKeys
+    # Issue-20 architecture uses fetchInitialEvents() on reconnect; dedup via seenAlertKeys
+    assert "fetchInitialEvents" in src
+
 

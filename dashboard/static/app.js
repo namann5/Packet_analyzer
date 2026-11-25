@@ -1039,6 +1039,8 @@ function connectWebSocket() {
         wsEl.style.color = "#7ee787";
       }
       if (dotEl) dotEl.className = "sb-dot green";
+      // Catch up on any alerts emitted before connect / during a dropped socket
+      fetchInitialEvents();
     };
 
     ws.onmessage = (e) => {
