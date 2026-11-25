@@ -43,6 +43,9 @@ def reset_state():
     state.scan_alerts = 0
     state.syn_flood_alerts = 0
     state.dns_tunnel_alerts = 0
+    state.malicious_domain_blocks = 0
+    state.vpn_detections = 0
+    state.vpn_blocks = 0
     state.connections.clear()
     state.events.clear()
 
@@ -650,5 +653,131 @@ def test_issue_9_handle_engine_connection_streaming():
     assert len(state.connections) == 1
     assert state.connections[0]["blocked"] is True
     assert state.connections[0]["reason"] == "MALICIOUS"
+
+
+# ============================================================================
+# 9. Issue #20 Verification: UI Polish, Accessibility, Empty States & Reports
+# ============================================================================
+
+def test_issue_20_ui_structure_accessibility_and_no_conflict_markers():
+    client = TestClient(app)
+
+    res_html = client.get("/")
+    assert res_html.status_code == 200
+    body = res_html.text
+
+    # Ensure zero leftover git merge conflict markers
+    for marker in ("<<<<<<<", "=======", ">>>>>>>"):
+        assert marker not in body
+
+    # Stage 01-04 visual hierarchy & active alerts prominence
+    assert "Stage 01" in body
+    assert "Stage 02" in body
+    assert "Stage 03" in body
+    assert "Stage 04" in body
+    assert "Active Security Alerts" in body
+
+    # Alert feed filtering across all 5 detector types
+    for alert_type in ("MALICIOUS", "VPN_DETECTED", "PORT_SCAN", "SYN_FLOOD", "DNS_TUNNEL"):
+        assert f'data-type="{alert_type}"' in body
+
+    # Empty states for connections, alerts, and charts
+    assert "No packets captured yet" in body
+    assert "No active security alerts" in body
+    assert "No throughput data yet" in body
+
+    # Accessibility essentials
+    assert ":focus-visible" in body
+    assert 'aria-label=' in body
+    assert 'role="tablist"' in body
+    assert "/static/app.js" in body
+
+    # Static JS asset served cleanly
+    res_js = client.get("/static/app.js")
+    assert res_js.status_code == 200
+    assert "niceCeil" in res_js.text
+    assert "escapeHtml" in res_js.text
+    assert "security_alert" in res_js.text
+
+
+def test_issue_20_reports_empty_states_and_alerts_alignment():
+    client = TestClient(app)
+
+    # Empty state HTML & PDF reports
+    empty_html = client.get("/api/report?format=html")
+    assert empty_html.status_code == 200
+    assert "No security alerts recorded during this session." in empty_html.text
+    assert "No application traffic recorded yet." in empty_html.text
+    assert "No blocked traffic recorded." in empty_html.text
+
+    empty_pdf = client.get("/api/report?format=pdf")
+    assert empty_pdf.status_code == 200
+    assert empty_pdf.content.startswith(b"%PDF")
+
+    # Populated with security alert + traffic
+    state.ingest({
+        "event": "security_alert",
+        "ts": 1710000000.5,
+        "alert_type": "MALICIOUS",
+        "app_or_domain": "evil.example.net",
+        "blocked": True,
+        "reason": "MALICIOUS",
+        "detail": "URLhaus match: evil.example.net",
+    })
+    state.ingest({
+        "event": "app_classified",
+        "app": "Google",
+        "bytes": 2048,
+        "blocked": False,
+    })
+
+    pop_html = client.get("/api/report?format=html")
+    assert pop_html.status_code == 200
+    assert "evil.example.net" in pop_html.text
+    assert "MALICIOUS" in pop_html.text
+    assert "Google" in pop_html.text
+
+    pop_pdf = client.get("/api/report?format=pdf")
+    assert pop_pdf.status_code == 200
+    assert pop_pdf.content.startswith(b"%PDF")
+
+
+def test_issue_20_handle_engine_connection_broadcasts_security_alert():
+    from unittest.mock import AsyncMock, MagicMock
+    from dashboard.server import manager
+
+    async def _run():
+        reader = asyncio.StreamReader()
+        mock_writer = MagicMock()
+        mock_writer.get_extra_info.return_value = ("127.0.0.1", 55555)
+        mock_writer.close = MagicMock()
+
+        async def dummy_wait_closed():
+            pass
+        mock_writer.wait_closed = dummy_wait_closed
+
+        fake_ws = MagicMock()
+        fake_ws.send_json = AsyncMock()
+        manager._clients.add(fake_ws)
+        try:
+            alert_payload = {
+                "event": "security_alert",
+                "alert_type": "VPN_DETECTED",
+                "app_or_domain": "WireGuard",
+                "blocked": False,
+                "detail": "WireGuard tunnel detected",
+            }
+            reader.feed_data((json.dumps(alert_payload) + "\n").encode("utf-8"))
+            reader.feed_eof()
+            await handle_engine_connection(reader, mock_writer)
+            assert fake_ws.send_json.await_count == 1
+            sent = fake_ws.send_json.await_args.args[0]
+            assert sent["event"] == "security_alert"
+            assert sent["alert_type"] == "VPN_DETECTED"
+        finally:
+            manager._clients.discard(fake_ws)
+
+    asyncio.run(_run())
+
 
 

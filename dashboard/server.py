@@ -275,6 +275,51 @@ def _maybe_anomaly_event() -> dict | None:
     return None
 
 
+def _maybe_security_alert() -> dict | None:
+    if random.random() < 0.06:   # 6 % chance per tick
+        if random.random() < 0.5:
+            domain = random.choice([
+                "bad-malware-domain.com",
+                "c2-server.evilcorp.biz",
+                "urlhaus-test-malware.org",
+            ])
+            return {
+                "event": "security_alert",
+                "ts": time.time(),
+                "alert_type": "MALICIOUS",
+                "five_tuple": {
+                    "src_ip": f"10.0.0.{random.randint(1, 254)}",
+                    "src_port": random.randint(1024, 65535),
+                    "dst_ip": f"198.51.100.{random.randint(1, 254)}",
+                    "dst_port": 443,
+                    "proto": "TCP",
+                },
+                "app_or_domain": domain,
+                "blocked": True,
+                "reason": "MALICIOUS",
+                "detail": f"Matched URLhaus blocklist: {domain}",
+            }
+        vpn_app = random.choice(["WireGuard", "OpenVPN"])
+        vpn_blocked = VPN_ACTION == "block"
+        return {
+            "event": "security_alert",
+            "ts": time.time(),
+            "alert_type": "VPN_DETECTED",
+            "five_tuple": {
+                "src_ip": f"10.0.0.{random.randint(1, 254)}",
+                "src_port": random.randint(1024, 65535),
+                "dst_ip": f"185.159.{random.randint(1, 254)}.{random.randint(1, 254)}",
+                "dst_port": 51820 if vpn_app == "WireGuard" else 1194,
+                "proto": "UDP",
+            },
+            "app_or_domain": vpn_app,
+            "blocked": vpn_blocked,
+            "reason": "VPN_DETECTED" if vpn_blocked else "",
+            "detail": f"{vpn_app} tunnel detected (policy: {VPN_ACTION})",
+        }
+    return None
+
+
 # ---------------------------------------------------------------------------
 # IPC bridge (Dashboard accepts connections from C++ engine; falls back to mock)
 # ---------------------------------------------------------------------------
@@ -308,7 +353,11 @@ async def handle_engine_connection(reader: asyncio.StreamReader, writer: asyncio
                         event = json.loads(line)
                         if isinstance(event, dict):
                             state.ingest(event)
-                            if manager._clients and event.get("event") in ("anomaly", "app_classified"):
+                            if manager._clients and event.get("event") in (
+                                "anomaly",
+                                "app_classified",
+                                "security_alert",
+                            ):
                                 await manager.broadcast(event)
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         pass
@@ -352,10 +401,20 @@ async def mock_feeder() -> None:
         await asyncio.sleep(1.0)
         if not _active_engine_conns:
             for _ in range(10):
-                state.ingest(_mock_event())
+                evt = _mock_event()
+                state.ingest(evt)
+                if manager._clients:
+                    await manager.broadcast(evt)
             anomaly = _maybe_anomaly_event()
             if anomaly:
                 state.ingest(anomaly)
+                if manager._clients:
+                    await manager.broadcast(anomaly)
+            sec_alert = _maybe_security_alert()
+            if sec_alert:
+                state.ingest(sec_alert)
+                if manager._clients:
+                    await manager.broadcast(sec_alert)
 
 
 # ---------------------------------------------------------------------------
@@ -627,64 +686,349 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 # Report export
 # ---------------------------------------------------------------------------
 
+def _fmt_bytes(num: int | float) -> str:
+    val = float(num or 0)
+    if val >= 1e9:
+        return f"{val / 1e9:.2f} GB"
+    if val >= 1e6:
+        return f"{val / 1e6:.2f} MB"
+    if val >= 1e3:
+        return f"{val / 1e3:.1f} KB"
+    return f"{int(val)} B"
+
+
+def _fmt_bps(bps: float) -> str:
+    val = float(bps or 0)
+    if val >= 1e6:
+        return f"{val / 1e6:.2f} Mbps"
+    if val >= 1e3:
+        return f"{val / 1e3:.1f} Kbps"
+    return f"{round(val)} bps"
+
+
+def _summarize_alert_event(event: dict[str, Any]) -> tuple[str, str, str, str]:
+    """Return (timestamp_str, alert_type, action_label, detail_text) for reports."""
+    ts_raw = event.get("ts")
+    if isinstance(ts_raw, (int, float)) and ts_raw > 0:
+        ts_str = time.strftime("%H:%M:%S", time.localtime(ts_raw))
+    else:
+        ts_str = "—"
+
+    alert_type = str(
+        event.get("alert_type") or event.get("type") or event.get("reason") or "ALERT"
+    ).upper()
+
+    if event.get("blocked"):
+        action = "BLOCKED"
+    elif alert_type == "VPN_DETECTED":
+        action = "FLAGGED"
+    else:
+        action = "ALERT"
+
+    detail = event.get("detail")
+    if isinstance(detail, dict):
+        detail_text = " ".join(f"{k}={v}" for k, v in detail.items())
+    elif detail:
+        detail_text = str(detail)
+    else:
+        detail_text = str(event.get("app_or_domain") or "—")
+
+    return ts_str, alert_type, action, detail_text
+
+
+_ALERT_BADGE_COLORS = {
+    "MALICIOUS": ("#ff9994", "rgba(248, 81, 73, 0.16)", "rgba(248, 81, 73, 0.45)"),
+    "SYN_FLOOD": ("#ff9994", "rgba(248, 81, 73, 0.16)", "rgba(248, 81, 73, 0.45)"),
+    "VPN_DETECTED": ("#ffdf85", "rgba(227, 179, 65, 0.16)", "rgba(227, 179, 65, 0.45)"),
+    "PORT_SCAN": ("#ffb86c", "rgba(255, 159, 0, 0.16)", "rgba(255, 159, 0, 0.45)"),
+    "DNS_TUNNEL": ("#76e3ea", "rgba(118, 227, 234, 0.16)", "rgba(118, 227, 234, 0.45)"),
+}
+
+
 def _render_html_report() -> str:
     snap = state.stats_snapshot()
+    total_classified = max(1, sum(snap["app_breakdown"].values()))
     rows = "".join(
-        f"<tr><td>{html.escape(str(app))}</td><td>{count}</td></tr>"
+        (
+            f"<tr>"
+            f"<td>{html.escape(str(app))}</td>"
+            f"<td class='mono r'>{count:,}</td>"
+            f"<td class='mono r'>{(count / total_classified) * 100:.1f}%</td>"
+            f"</tr>"
+        )
         for app, count in sorted(
             snap["app_breakdown"].items(), key=lambda x: -x[1]
         )
     )
+    total_blocked_reasons = max(1, sum(snap["blocked_reasons"].values()))
     blocked_rows = "".join(
-        f"<tr><td>{html.escape(str(reason))}</td><td>{count}</td></tr>"
-        for reason, count in snap["blocked_reasons"].items()
+        (
+            f"<tr>"
+            f"<td><span class='badge' style='color:#ff9994;background:rgba(248,81,73,0.16);border-color:rgba(248,81,73,0.45)'>{html.escape(str(reason))}</span></td>"
+            f"<td class='mono r'>{count:,}</td>"
+            f"<td class='mono r'>{(count / total_blocked_reasons) * 100:.1f}%</td>"
+            f"</tr>"
+        )
+        for reason, count in sorted(
+            snap["blocked_reasons"].items(), key=lambda x: -x[1]
+        )
     )
+
+    alert_rows_list = []
+    for ev in list(state.events)[:25]:
+        ts_str, atype, action, detail_text = _summarize_alert_event(ev)
+        fg, bg, border = _ALERT_BADGE_COLORS.get(
+            atype, ("#c9d1d9", "rgba(139,148,158,0.15)", "rgba(139,148,158,0.35)")
+        )
+        action_color = "#ff9994" if action == "BLOCKED" else "#ffdf85"
+        alert_rows_list.append(
+            f"<tr>"
+            f"<td class='mono dim'>{html.escape(ts_str)}</td>"
+            f"<td><span class='badge' style='color:{fg};background:{bg};border-color:{border}'>{html.escape(atype)}</span></td>"
+            f"<td class='mono' style='color:{action_color};font-weight:600'>{html.escape(action)}</td>"
+            f"<td class='mono'>{html.escape(detail_text)}</td>"
+            f"</tr>"
+        )
+    alert_rows = "".join(alert_rows_list)
+
+    total_alerts = (
+        snap["scan_alerts"]
+        + snap["syn_flood_alerts"]
+        + snap["dns_tunnel_alerts"]
+        + snap["malicious_domain_blocks"]
+        + snap["vpn_detections"]
+    )
+    alert_banner_class = "banner-alert" if total_alerts > 0 else "banner-ok"
+    alert_banner_text = (
+        f"{total_alerts:,} active security alert(s) recorded across detectors"
+        if total_alerts > 0
+        else "No active security alerts recorded — traffic nominal"
+    )
+
     return f"""<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>DPI Report</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Packet Analyzer Pro — DPI Report</title>
   <style>
-    body {{ font-family: Arial, sans-serif; margin: 40px; color: #222; }}
-    h1 {{ color: #1a56db; }}
-    table {{ border-collapse: collapse; width: 100%; margin-bottom: 24px; }}
-    th, td {{ border: 1px solid #ccc; padding: 8px 12px; text-align: left; }}
-    th {{ background: #f0f4ff; }}
-    .stat {{ display: inline-block; margin: 8px 16px 8px 0;
-             padding: 12px 20px; background: #f9fafb;
-             border-radius: 8px; border: 1px solid #e5e7eb; }}
-    .stat h3 {{ margin: 0 0 4px; font-size: 0.85rem; color: #6b7280; }}
-    .stat p  {{ margin: 0; font-size: 1.5rem; font-weight: bold; color: #111; }}
+    :root {{
+      --bg: #0e141d;
+      --bg2: #131a26;
+      --bg3: #1c2536;
+      --border: #263345;
+      --text: #e6edf3;
+      --text-dim: #9aa5b4;
+      --blue: #58a6ff;
+      --green: #3fb950;
+      --red: #ff9994;
+      --orange: #ffdf85;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
+      padding: 28px 36px;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }}
+    .report-header {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 18px 22px;
+      background: #111722;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 18px;
+    }}
+    h1 {{
+      margin: 0;
+      font-size: 1.25rem;
+      color: #f0f6fc;
+      letter-spacing: 0.02em;
+    }}
+    .meta {{
+      font-size: 0.85rem;
+      color: var(--text-dim);
+      margin-top: 4px;
+    }}
+    .policy-pill {{
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.78rem;
+      padding: 4px 10px;
+      border-radius: 4px;
+      border: 1px solid rgba(56, 139, 253, 0.4);
+      background: rgba(56, 139, 253, 0.14);
+      color: #93c5fd;
+    }}
+    .banner-alert, .banner-ok {{
+      padding: 10px 16px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin-bottom: 20px;
+      border: 1px solid;
+    }}
+    .banner-alert {{
+      background: rgba(248, 81, 73, 0.14);
+      border-color: rgba(248, 81, 73, 0.45);
+      color: #ffb4ae;
+    }}
+    .banner-ok {{
+      background: rgba(63, 185, 80, 0.12);
+      border-color: rgba(63, 185, 80, 0.35);
+      color: #7ee787;
+    }}
+    h2 {{
+      font-size: 0.95rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: #93c5fd;
+      margin: 24px 0 12px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }}
+    .stat-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+      gap: 12px;
+      margin-bottom: 22px;
+    }}
+    .stat {{
+      padding: 12px 16px;
+      background: var(--bg2);
+      border-radius: 6px;
+      border: 1px solid var(--border);
+    }}
+    .stat.alert-active {{
+      border-color: rgba(248, 81, 73, 0.5);
+      background: rgba(248, 81, 73, 0.08);
+    }}
+    .stat h3 {{
+      margin: 0 0 6px;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+    }}
+    .stat p {{
+      margin: 0;
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: #f0f6fc;
+      font-family: 'JetBrains Mono', monospace;
+    }}
+    .stat .sub {{
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      margin-top: 2px;
+      font-family: 'JetBrains Mono', monospace;
+    }}
+    table {{
+      border-collapse: collapse;
+      width: 100%;
+      margin-bottom: 22px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }}
+    th, td {{
+      border-bottom: 1px solid #1a2433;
+      padding: 9px 14px;
+      text-align: left;
+      font-size: 0.85rem;
+    }}
+    th {{
+      background: #111722;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }}
+    .mono {{ font-family: 'JetBrains Mono', monospace; }}
+    .dim {{ color: var(--text-dim); }}
+    .r {{ text-align: right; }}
+    .empty {{
+      text-align: center;
+      color: var(--text-dim);
+      padding: 20px;
+      font-style: italic;
+    }}
+    .badge {{
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.74rem;
+      font-weight: 700;
+      border: 1px solid;
+    }}
+    @media print {{
+      body {{ background: #fff; color: #111; padding: 16px; }}
+      .report-header, .stat, table {{ background: #fff; border-color: #cbd5e1; }}
+      th {{ background: #f1f5f9; color: #334155; }}
+      h1, .stat p {{ color: #0f172a; }}
+      h2 {{ color: #1d4ed8; }}
+    }}
   </style>
 </head>
 <body>
-  <h1>📡 Packet Analyzer — DPI Report</h1>
-  <p>Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
-
-  <h2>Summary</h2>
-  <div>
-    <div class="stat"><h3>Total Packets</h3><p>{snap['total_packets']:,}</p></div>
-    <div class="stat"><h3>Total Bytes</h3><p>{snap['total_bytes']:,}</p></div>
-    <div class="stat"><h3>Throughput</h3><p>{snap['throughput_bps']:,.0f} bps</p></div>
-    <div class="stat"><h3>Blocked</h3><p>{snap['blocked_total']:,}</p></div>
-    <div class="stat"><h3>Port Scan Alerts</h3><p>{snap['scan_alerts']}</p></div>
-    <div class="stat"><h3>SYN Flood Alerts</h3><p>{snap['syn_flood_alerts']}</p></div>
-    <div class="stat"><h3>DNS Tunnel Alerts</h3><p>{snap['dns_tunnel_alerts']}</p></div>
-    <div class="stat"><h3>Malicious Blocks</h3><p>{snap['malicious_domain_blocks']}</p></div>
-    <div class="stat"><h3>VPN Detections</h3><p>{snap['vpn_detections']}</p></div>
-    <div class="stat"><h3>VPN Blocks</h3><p>{snap['vpn_blocks']}</p></div>
+  <div class="report-header">
+    <div>
+      <h1>Packet Analyzer Pro — DPI Report</h1>
+      <div class="meta">Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}</div>
+    </div>
+    <div class="policy-pill">VPN Policy: {html.escape(VPN_ACTION.upper())}</div>
   </div>
+
+  <div class="{alert_banner_class}">{html.escape(alert_banner_text)}</div>
+
+  <h2>Stage 01–04 Telemetry Summary</h2>
+  <div class="stat-grid">
+    <div class="stat"><h3>Total Packets</h3><p>{snap['total_packets']:,}</p></div>
+    <div class="stat"><h3>Total Bytes</h3><p>{_fmt_bytes(snap['total_bytes'])}</p><div class="sub">{snap['total_bytes']:,} B</div></div>
+    <div class="stat"><h3>Throughput</h3><p>{_fmt_bps(snap['throughput_bps'])}</p><div class="sub">{snap['throughput_bps']:,.0f} bps</div></div>
+    <div class="stat {'alert-active' if snap['blocked_total'] > 0 else ''}"><h3>Blocked Packets</h3><p>{snap['blocked_total']:,}</p></div>
+    <div class="stat {'alert-active' if snap['malicious_domain_blocks'] > 0 else ''}"><h3>Malicious Blocks</h3><p>{snap['malicious_domain_blocks']}</p></div>
+    <div class="stat {'alert-active' if snap['vpn_detections'] > 0 else ''}"><h3>VPN Detections</h3><p>{snap['vpn_detections']}</p><div class="sub">Blocked: {snap['vpn_blocks']}</div></div>
+    <div class="stat {'alert-active' if snap['scan_alerts'] > 0 else ''}"><h3>Port Scan Alerts</h3><p>{snap['scan_alerts']}</p></div>
+    <div class="stat {'alert-active' if snap['syn_flood_alerts'] > 0 else ''}"><h3>SYN Flood Alerts</h3><p>{snap['syn_flood_alerts']}</p></div>
+    <div class="stat {'alert-active' if snap['dns_tunnel_alerts'] > 0 else ''}"><h3>DNS Tunnel Alerts</h3><p>{snap['dns_tunnel_alerts']}</p></div>
+  </div>
+
+  <h2>Recent Security Alerts</h2>
+  <table>
+    <thead>
+      <tr><th>Time</th><th>Alert Type</th><th>Action</th><th>Details</th></tr>
+    </thead>
+    <tbody>
+      {alert_rows if alert_rows else '<tr><td colspan="4" class="empty">No security alerts recorded during this session.</td></tr>'}
+    </tbody>
+  </table>
 
   <h2>Application Breakdown</h2>
   <table>
-    <tr><th>Application</th><th>Packets</th></tr>
-    {rows}
+    <thead>
+      <tr><th>Application</th><th class="r">Packets</th><th class="r">Share</th></tr>
+    </thead>
+    <tbody>
+      {rows if rows else '<tr><td colspan="3" class="empty">No application traffic recorded yet.</td></tr>'}
+    </tbody>
   </table>
 
   <h2>Blocked Traffic by Reason</h2>
   <table>
-    <tr><th>Reason</th><th>Count</th></tr>
-    {blocked_rows if blocked_rows else '<tr><td colspan="2">None</td></tr>'}
+    <thead>
+      <tr><th>Reason</th><th class="r">Count</th><th class="r">Share</th></tr>
+    </thead>
+    <tbody>
+      {blocked_rows if blocked_rows else '<tr><td colspan="3" class="empty">No blocked traffic recorded.</td></tr>'}
+    </tbody>
   </table>
 </body>
 </html>"""
@@ -703,54 +1047,200 @@ async def export_report(format: str = "html"):
         try:
             from io import BytesIO
 
+            from reportlab.lib import colors
             from reportlab.lib.pagesizes import A4
-            from reportlab.lib.styles import getSampleStyleSheet
-            from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+            from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+            from reportlab.platypus import (
+                Paragraph,
+                SimpleDocTemplate,
+                Spacer,
+                Table,
+                TableStyle,
+            )
 
             snap = state.stats_snapshot()
             buf = BytesIO()
-            doc = SimpleDocTemplate(buf, pagesize=A4)
+            doc = SimpleDocTemplate(
+                buf,
+                pagesize=A4,
+                leftMargin=36,
+                rightMargin=36,
+                topMargin=36,
+                bottomMargin=36,
+            )
             styles = getSampleStyleSheet()
+            title_style = ParagraphStyle(
+                "EnterpriseTitle",
+                parent=styles["Title"],
+                textColor=colors.HexColor("#0f172a"),
+                fontSize=18,
+                spaceAfter=4,
+            )
+            heading_style = ParagraphStyle(
+                "EnterpriseHeading",
+                parent=styles["Heading2"],
+                textColor=colors.HexColor("#1f6feb"),
+                fontSize=12,
+                spaceBefore=10,
+                spaceAfter=6,
+            )
             story = []
 
-            story.append(Paragraph("Packet Analyzer — DPI Report", styles["Title"]))
+            story.append(Paragraph("Packet Analyzer Pro — DPI Report", title_style))
             story.append(
                 Paragraph(
-                    f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}", styles["Normal"]
+                    f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')} &nbsp;|&nbsp; "
+                    f"VPN Policy: {xml_escape(VPN_ACTION.upper())}",
+                    styles["Normal"],
                 )
             )
-            story.append(Spacer(1, 12))
+            story.append(Spacer(1, 14))
 
-            story.append(Paragraph("Summary", styles["Heading2"]))
-            for label, val in [
-                ("Total Packets", f"{snap['total_packets']:,}"),
-                ("Total Bytes", f"{snap['total_bytes']:,}"),
-                ("Throughput (bps)", f"{snap['throughput_bps']:,.0f}"),
-                ("Blocked Total", f"{snap['blocked_total']:,}"),
-                ("Port Scan Alerts", snap["scan_alerts"]),
-                ("SYN Flood Alerts", snap["syn_flood_alerts"]),
-                ("DNS Tunnel Alerts", snap["dns_tunnel_alerts"]),
-                ("Malicious Domain Blocks", snap["malicious_domain_blocks"]),
-                ("VPN Detections", snap["vpn_detections"]),
-                ("VPN Blocks", snap["vpn_blocks"]),
-            ]:
-                story.append(Paragraph(f"<b>{label}:</b> {val}", styles["Normal"]))
-
-            story.append(Spacer(1, 12))
-            story.append(Paragraph("Application Breakdown", styles["Heading2"]))
-            for app_name, count in sorted(
-                snap["app_breakdown"].items(), key=lambda x: -x[1]
-            ):
-                safe_app = xml_escape(str(app_name))
-                story.append(
-                    Paragraph(f"{safe_app}: {count} packets", styles["Normal"])
+            story.append(Paragraph("Stage 01–04 Telemetry Summary", heading_style))
+            summary_rows = [
+                ["Metric", "Value", "Metric", "Value"],
+                [
+                    "Total Packets",
+                    f"{snap['total_packets']:,}",
+                    "Port Scan Alerts",
+                    str(snap["scan_alerts"]),
+                ],
+                [
+                    "Total Bytes",
+                    f"{_fmt_bytes(snap['total_bytes'])} ({snap['total_bytes']:,} B)",
+                    "SYN Flood Alerts",
+                    str(snap["syn_flood_alerts"]),
+                ],
+                [
+                    "Throughput",
+                    f"{_fmt_bps(snap['throughput_bps'])} ({snap['throughput_bps']:,.0f} bps)",
+                    "DNS Tunnel Alerts",
+                    str(snap["dns_tunnel_alerts"]),
+                ],
+                [
+                    "Blocked Total",
+                    f"{snap['blocked_total']:,}",
+                    "Malicious Blocks",
+                    str(snap["malicious_domain_blocks"]),
+                ],
+                [
+                    "VPN Detections",
+                    str(snap["vpn_detections"]),
+                    "VPN Blocks",
+                    str(snap["vpn_blocks"]),
+                ],
+            ]
+            summary_table = Table(summary_rows, colWidths=[115, 145, 115, 145])
+            summary_table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#131a26")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 9),
+                        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                        ("PADDING", (0, 0), (-1, -1), 6),
+                    ]
                 )
-
+            )
+            story.append(summary_table)
             story.append(Spacer(1, 12))
-            story.append(Paragraph("Blocked Traffic by Reason", styles["Heading2"]))
-            for reason, count in snap["blocked_reasons"].items():
-                safe_reason = xml_escape(str(reason))
-                story.append(Paragraph(f"{safe_reason}: {count}", styles["Normal"]))
+
+            story.append(Paragraph("Recent Security Alerts", heading_style))
+            recent_events = list(state.events)[:20]
+            if recent_events:
+                ev_table_rows = [["Time", "Type", "Action", "Detail"]]
+                for ev in recent_events:
+                    ts_str, atype, action, detail_text = _summarize_alert_event(ev)
+                    ev_table_rows.append(
+                        [
+                            ts_str,
+                            atype,
+                            action,
+                            Paragraph(xml_escape(detail_text[:120]), styles["Normal"]),
+                        ]
+                    )
+                ev_table = Table(ev_table_rows, colWidths=[60, 95, 65, 300])
+                ev_table.setStyle(
+                    TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#131a26")),
+                            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("PADDING", (0, 0), (-1, -1), 5),
+                        ]
+                    )
+                )
+                story.append(ev_table)
+            else:
+                story.append(
+                    Paragraph("No security alerts recorded during this session.", styles["Normal"])
+                )
+            story.append(Spacer(1, 12))
+
+            story.append(Paragraph("Application Breakdown", heading_style))
+            app_items = sorted(snap["app_breakdown"].items(), key=lambda x: -x[1])
+            if app_items:
+                total_app_pkts = max(1, sum(c for _, c in app_items))
+                app_rows = [["Application", "Packets", "Share"]]
+                for app_name, count in app_items:
+                    app_rows.append(
+                        [
+                            xml_escape(str(app_name)),
+                            f"{count:,}",
+                            f"{(count / total_app_pkts) * 100:.1f}%",
+                        ]
+                    )
+                app_table = Table(app_rows, colWidths=[260, 130, 130])
+                app_table.setStyle(
+                    TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#131a26")),
+                            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                            ("FONTSIZE", (0, 0), (-1, -1), 9),
+                            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                            ("PADDING", (0, 0), (-1, -1), 5),
+                        ]
+                    )
+                )
+                story.append(app_table)
+            else:
+                story.append(
+                    Paragraph("No application traffic recorded yet.", styles["Normal"])
+                )
+            story.append(Spacer(1, 12))
+
+            story.append(Paragraph("Blocked Traffic by Reason", heading_style))
+            blocked_items = sorted(snap["blocked_reasons"].items(), key=lambda x: -x[1])
+            if blocked_items:
+                blk_rows = [["Reason", "Count"]]
+                for reason, count in blocked_items:
+                    blk_rows.append([xml_escape(str(reason)), f"{count:,}"])
+                blk_table = Table(blk_rows, colWidths=[340, 180])
+                blk_table.setStyle(
+                    TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#131a26")),
+                            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                            ("FONTSIZE", (0, 0), (-1, -1), 9),
+                            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                            ("PADDING", (0, 0), (-1, -1), 5),
+                        ]
+                    )
+                )
+                story.append(blk_table)
+            else:
+                story.append(
+                    Paragraph("No blocked traffic recorded.", styles["Normal"])
+                )
 
             doc.build(story)
             pdf_bytes = buf.getvalue()
