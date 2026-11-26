@@ -1303,13 +1303,22 @@ function setCaptureBadgeState(mode) {
 }
 
 function startCapture() {
+  const wasPaused = isStreamPaused;
   isStreamPaused = false;
   setCaptureBadgeState("active");
+  if (wasPaused) {
+    fetchInitialEvents();
+    fetchStats();
+  }
 }
 
 function togglePause() {
   isStreamPaused = !isStreamPaused;
   setCaptureBadgeState(isStreamPaused ? "paused" : "active");
+  if (!isStreamPaused) {
+    fetchInitialEvents();
+    fetchStats();
+  }
 }
 
 function stopCapture() {
@@ -1402,12 +1411,17 @@ window.addEventListener("load", () => {
   fetchInitialEvents();
   fetchStats();
   connectWebSocket();
-  // Poll /api/stats only when WebSocket is not open so stats/pps aren't double-sampled
+  // Poll /api/stats and /api/events only when WebSocket is not open
   setInterval(() => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       fetchStats();
     }
   }, 1500);
+  setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      fetchInitialEvents();
+    }
+  }, 8000);
 });
 
 window.addEventListener("resize", () => {

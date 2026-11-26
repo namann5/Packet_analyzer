@@ -1135,6 +1135,167 @@ def test_issue_18_ws_reconnect_and_app_js_dedup():
     # Issue-20 architecture uses fetchInitialEvents() on reconnect; dedup via seenAlertKeys
     assert "fetchInitialEvents" in src
 
+    import shutil
+    import subprocess
+    if shutil.which("node"):
+        js_test = r"""
+const fs = require("fs");
+const vm = require("vm");
+const elements = {};
+function makeEl(id) {
+  return {
+    id, textContent: "", _innerHTML: "", value: "", style: {},
+    get innerHTML() { return this._innerHTML; },
+    set innerHTML(v) { this._innerHTML = String(v); if (!v) this.children = []; },
+    dataset: {}, children: [], attributes: {},
+    classList: { _s: new Set(), add(c){this._s.add(c);}, remove(c){this._s.delete(c);}, toggle(c,b){b?this._s.add(c):this._s.delete(c);} },
+    setAttribute(k, v) { this.attributes[k] = String(v); },
+    getAttribute(k) { return this.attributes[k]; },
+    appendChild(c) { this.children.push(c); },
+    querySelectorAll() { return []; },
+    addEventListener() {}
+  };
+}
+["alert-feed-list", "alert-feed-count", "alert-autoscroll-chk", "sb-ws", "sb-dot-ws",
+ "hdr-capture-badge", "hdr-capture-text", "sb-status", "sb-dot-status", "btn-pause", "footer-pause-btn"
+].forEach(id => elements[id] = makeEl(id));
+
+const intervals = [];
+const loadHandlers = [];
+let fakeWsInstance = null;
+class FakeWebSocket {
+  static OPEN = 1;
+  static CLOSED = 3;
+  constructor() { this.readyState = 1; fakeWsInstance = this; }
+  close() { this.readyState = 3; }
+}
+const fetchedUrls = [];
+const dupEvent = {
+  id: 42,
+  event: "security_alert",
+  alert_type: "MALICIOUS",
+  detail: "c2.bad.xyz",
+  app_or_domain: "c2.bad.xyz",
+  blocked: true,
+  reason: "MALICIOUS",
+  ts: 1710000001
+};
+let apiEventsPayload = [dupEvent];
+
+const ctx = {
+  console, Date, Math, Set, Array, Object, Number, String, JSON,
+  WebSocket: FakeWebSocket,
+  document: {
+    getElementById: (id) => elements[id] || null,
+    querySelectorAll: () => [],
+    createElement: (tag) => makeEl(tag),
+  },
+  window: { addEventListener: (ev, fn) => { if (ev === "load") loadHandlers.push(fn); } },
+  location: { protocol: "http:", host: "127.0.0.1:8000" },
+  setInterval: (fn, ms) => intervals.push({ fn, ms }),
+  setTimeout: () => {},
+  fetch: async (url) => {
+    fetchedUrls.push(url);
+    if (url === "/api/events") return { ok: true, json: async () => apiEventsPayload };
+    if (url === "/api/connections") return { ok: true, json: async () => [] };
+    return { ok: true, json: async () => ({ total_packets: 0, total_bytes: 0, throughput_bps: 0, blocked_total: 0, app_breakdown: {}, blocked_reasons: {} }) };
+  },
+};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync("dashboard/static/app.js", "utf8"), ctx);
+ctx.initGraph = () => {};
+ctx.initResizeHandle = () => {};
+
+(async () => {
+  for (const fn of loadHandlers) fn();
+  await new Promise(r => setImmediate(r));
+
+  // Receive the same alert over WebSocket after initial /api/events load
+  fakeWsInstance.onmessage({ data: JSON.stringify(dupEvent) });
+  if (elements["alert-feed-list"].children.length !== 1) {
+    throw new Error("Expected deduplicated single alert, got " + elements["alert-feed-list"].children.length);
+  }
+
+  // Pause stream, emit missed alert while paused, then resume -> fetchInitialEvents catches up
+  ctx.togglePause();
+  const missedEvent = { ...dupEvent, id: 43, detail: "missed-while-paused.xyz" };
+  fakeWsInstance.onmessage({ data: JSON.stringify(missedEvent) });
+  if (elements["alert-feed-list"].children.length !== 1) {
+    throw new Error("Paused stream should not render live WS alert");
+  }
+  apiEventsPayload = [missedEvent, dupEvent];
+  ctx.togglePause();
+  await new Promise(r => setImmediate(r));
+  if (elements["alert-feed-list"].children.length !== 2) {
+    throw new Error("Resuming stream should catch up missed alert, got " + elements["alert-feed-list"].children.length);
+  }
+
+  // Disconnected fallback polling: skip when WS OPEN, poll when WS CLOSED
+  const beforeCount = fetchedUrls.length;
+  intervals.forEach(i => i.fn());
+  if (fetchedUrls.length !== beforeCount) {
+    throw new Error("Fallback intervals should not poll while WS is OPEN");
+  }
+  fakeWsInstance.readyState = FakeWebSocket.CLOSED;
+  intervals.forEach(i => i.fn());
+  if (!fetchedUrls.slice(beforeCount).includes("/api/events") || !fetchedUrls.slice(beforeCount).includes("/api/stats")) {
+    throw new Error("Fallback intervals must poll /api/stats and /api/events when WS is disconnected");
+  }
+})().catch(e => { console.error(e); process.exit(1); });
+"""
+        proc = subprocess.run(["node", "-e", js_test], capture_output=True, text=True, check=False)
+        assert proc.returncode == 0, f"JS reconnect/dedup/fallback test failed: {proc.stderr}"
+
+
+def test_issue_18_mock_feeder_broadcasts_anomaly_with_id():
+    """Verify mock_feeder broadcasts generated anomaly events with an id to WS clients."""
+    from unittest.mock import patch
+    import dashboard.server as srv
+
+    sent_frames: list[dict] = []
+
+    class DummyWS:
+        async def send_json(self, data: dict):
+            sent_frames.append(data)
+
+    dummy_ws = DummyWS()
+    sleep_calls = 0
+
+    async def one_tick_sleep(_delay: float):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            raise asyncio.CancelledError()
+
+    sample_anomaly = {
+        "event": "anomaly",
+        "ts": 1710000020.0,
+        "type": "PORT_SCAN",
+        "detail": {"src_ip": "10.0.0.77", "ports": 25},
+    }
+
+    async def _run():
+        srv.manager._clients.add(dummy_ws)
+        try:
+            with (
+                patch.object(srv.asyncio, "sleep", side_effect=one_tick_sleep),
+                patch.object(srv, "_maybe_anomaly_event", return_value=sample_anomaly),
+                patch.object(srv, "_maybe_security_alert", return_value=None),
+            ):
+                try:
+                    await srv.mock_feeder()
+                except asyncio.CancelledError:
+                    pass
+        finally:
+            srv.manager._clients.discard(dummy_ws)
+
+    asyncio.run(_run())
+
+    anomaly_frames = [f for f in sent_frames if f.get("event") == "anomaly"]
+    assert len(anomaly_frames) == 1
+    assert anomaly_frames[0]["type"] == "PORT_SCAN"
+    assert "id" in anomaly_frames[0]
+
 
 # ============================================================================
 # 12. Issue #19 Verification: Stage 04 Cards and Badge Styles
