@@ -1250,16 +1250,9 @@ async function fetchInitialEvents() {
     const events = await res.json();
     if (!Array.isArray(events)) return;
 
-    // Preserve newest-first order in alertStore and stream
+    // Preserve newest-first order in alertStore (flows come from /api/connections & app_classified)
     events.slice(0, 30).reverse().forEach(ev => {
       addSecurityAlert(ev);
-      const norm = normalizeConn(ev);
-      connStore.unshift(norm);
-      if (connStore.length > MAX_CONN_ROWS) connStore.pop();
-      addPacketRow(norm, true);
-      if (norm.src_ip !== "-") {
-        addNetworkConnection(norm.src_ip, "Gateway");
-      }
     });
   } catch (err) {}
 }

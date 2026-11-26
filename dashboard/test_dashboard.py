@@ -835,6 +835,9 @@ for (const t of ["MALICIOUS", "VPN_DETECTED", "PORT_SCAN", "SYN_FLOOD", "DNS_TUN
 }
 const dnsPkt = ctx.normalizeConn({ event: "app_classified", app: "DNS", five_tuple: { proto: "UDP", dst_port: 53, src_port: 51515, src_ip: "10.0.0.5", dst_ip: "8.8.8.8" }, bytes: 90 });
 if (dnsPkt.protocol !== "DNS" || dnsPkt.transportProto !== "UDP") throw new Error("UDP DNS transport not preserved");
+ctx.addSecurityAlert({ event: "security_alert", alert_type: "MALICIOUS", detail: "<img src=x onerror=alert(1)>", ts: 1710000006 });
+ctx.setAlertFilter("MALICIOUS");
+if (elements["alert-feed-list"].children.some(li => li.innerHTML.includes("<img"))) throw new Error("Unescaped HTML in alert feed");
 """
         proc = subprocess.run(["node", "-e", js_harness], capture_output=True, text=True, check=False)
         assert proc.returncode == 0, f"JS alert filter / UDP DNS test failed: {proc.stderr}"
