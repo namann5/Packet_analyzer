@@ -11,6 +11,14 @@
 
 namespace DPI {
 
+enum class VPNAction {
+    FLAG_ONLY = 0,
+    BLOCK = 1
+};
+
+std::string vpnActionToString(VPNAction action);
+VPNAction stringToVPNAction(const std::string& str);
+
 enum class VPNType {
     NONE = 0,
     WIREGUARD,
@@ -42,7 +50,8 @@ struct CIDRRange {
 class VPNDetector {
 public:
     struct Config {
-        bool block_vpn = false;               // If true, drops detected VPN traffic
+        VPNAction action = VPNAction::FLAG_ONLY; // Default: FLAG_ONLY (alert & monitor, forward packet)
+        bool block_vpn = false;                  // Backward compatible flag, synced with action
         // Synthetic/demo ranges must be explicitly configured by callers.
         std::string vpn_ranges_path;
     };
@@ -69,10 +78,13 @@ public:
 
     Config getConfig() const;
     void setConfig(const Config& config);
+    void setAction(VPNAction action);
+    VPNAction getAction() const;
+    bool isBlock() const;
     void setBlockVPN(bool block);
 
-    // Thread-safe read of the blocking flag (config_ may be mutated concurrently)
-    bool shouldBlockVPN() const { return block_vpn_.load(std::memory_order_relaxed); }
+    // Thread-safe read of the blocking flag
+    bool shouldBlockVPN() const { return isBlock(); }
 
     size_t getRangeCount() const;
 

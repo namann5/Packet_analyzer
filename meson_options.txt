@@ -16,5 +16,12 @@ option(
   'tests',
   type: 'boolean',
   value: true,
-  description: 'Run the engine smoke test after build',
+  description: 'Run the engine smoke test after build'
+)
+
+option(
+  'sqlite',
+  type: 'boolean',
+  value: false,
+  description: 'Use bundled sqlite3.c amalgamation for rules persistence (zero-install)'
 )

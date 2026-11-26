@@ -191,15 +191,15 @@ struct DPIStats {
     // Application breakdown counters
     std::atomic<uint64_t> app_counts[static_cast<size_t>(AppType::APP_COUNT)];
 
+    DPIStats(const DPIStats&) = delete;
+    DPIStats& operator=(const DPIStats&) = delete;
     DPIStats() {
         for (size_t i = 0; i < static_cast<size_t>(AppType::APP_COUNT); ++i) {
             app_counts[i].store(0);
         }
     }
 
-    // Non-copyable due to atomics
-    DPIStats(const DPIStats&) = delete;
-    DPIStats& operator=(const DPIStats&) = delete;
+    // Non-copyable due to atomics (copy ctors deleted for safety)
 };
 
 } // namespace DPI

@@ -72,15 +72,15 @@ DPIEngine::DPIEngine(const Config& config)
     : config_(config), output_queue_(10000) {
     
     std::cout << "\n";
-    std::cout << "â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—\n";
+    std::cout << "â•”â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•—\n";
     std::cout << "â•‘                    DPI ENGINE v1.0                            â•‘\n";
     std::cout << "â•‘               Deep Packet Inspection System                   â•‘\n";
-    std::cout << "â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£\n";
+    std::cout << "â• â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•£\n";
     std::cout << "â•‘ Configuration:                                                â•‘\n";
     std::cout << "â•‘   Load Balancers:    " << std::setw(3) << config.num_load_balancers << "                                       â•‘\n";
     std::cout << "â•‘   FPs per LB:        " << std::setw(3) << config.fps_per_lb << "                                       â•‘\n";
     std::cout << "â•‘   Total FP threads:  " << std::setw(3) << (config.num_load_balancers * config.fps_per_lb) << "                                       â•‘\n";
-    std::cout << "â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•\n";
+    std::cout << "â•šâ•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?\n";
 }
 
 DPIEngine::~DPIEngine() {
@@ -107,7 +107,8 @@ bool DPIEngine::initialize() {
     anomaly_detector_ = std::make_unique<AnomalyDetector>(anom_cfg);
 
     // 2. Malicious Blocklist
-    blocklist_ = std::make_unique<Blocklist>();
+    blocklist_ = std::make_unique<Blocklist>(config_.urlhaus_max_size);
+    blocklist_->setRefreshInterval(std::chrono::seconds(config_.urlhaus_refresh_interval_sec));
     if (config_.download_urlhaus) {
         blocklist_->downloadOnline();
     } else if (!config_.blocklist_file.empty()) {
@@ -118,9 +119,12 @@ bool DPIEngine::initialize() {
         }
     }
 
-    // 3. VPN Detector
     VPNDetector::Config vpn_cfg;
-    vpn_cfg.block_vpn = config_.block_vpn;
+    vpn_cfg.action = config_.vpn_action;
+    if (config_.block_vpn) {
+        vpn_cfg.action = VPNAction::BLOCK;
+    }
+    vpn_cfg.block_vpn = (vpn_cfg.action == VPNAction::BLOCK);
     vpn_cfg.vpn_ranges_path = resolveResourcePath(config_.vpn_ranges_file);
     vpn_detector_ = std::make_unique<VPNDetector>(vpn_cfg);
 
@@ -141,6 +145,14 @@ bool DPIEngine::initialize() {
         } else {
             std::cout << "[DPIEngine] Connected IPC emitter to " << config_.ipc_host << ":" << config_.ipc_port << "\n";
         }
+
+        // Bridge EventSink security alerts directly to the IPC emitter stream
+        // (Anomaly frames are already emitted via configureTelemetry)
+        EventSink::instance().setCallback([this](const std::string& json_str) {
+            if (ipc_emitter_ && json_str.find("\"security_alert\"") != std::string::npos) {
+                ipc_emitter_->sendRawJson(json_str);
+            }
+        });
     }
 
     EventSink::instance().configureTelemetry(ipc_emitter_.get(), &stats_);
@@ -226,6 +238,7 @@ void DPIEngine::stop() {
     }
 
     // Disconnect IPC emitter so pending sends unblock immediately
+    EventSink::instance().setCallback(nullptr);
     if (ipc_emitter_) {
         ipc_emitter_->disconnect();
     }
@@ -254,6 +267,14 @@ void DPIEngine::ipcThreadFunc() {
         }
         last_bytes = current_bytes;
         last_time = now;
+
+        // Periodic URLhaus blocklist refresh if enabled and interval expired
+        if (config_.download_urlhaus && config_.urlhaus_refresh_interval_sec > 0 && blocklist_) {
+            if (blocklist_->shouldRefresh()) {
+                std::cout << "[DPIEngine] Periodic URLhaus refresh interval reached. Refreshing...\n";
+                blocklist_->downloadOnline();
+            }
+        }
 
         if (ipc_emitter_) {
             if (!ipc_emitter_->isConnected()) {
@@ -671,9 +692,9 @@ bool DPIEngine::saveRules(const std::string& filename) {
 std::string DPIEngine::generateReport() const {
     std::ostringstream ss;
     
-    ss << "\nâ•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—\n";
+    ss << "\nâ•”â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•—\n";
     ss << "â•‘                    DPI ENGINE STATISTICS                      â•‘\n";
-    ss << "â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£\n";
+    ss << "â• â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•£\n";
     
     ss << "â•‘ PACKET STATISTICS                                             â•‘\n";
     ss << "â•‘   Total Packets:      " << std::setw(12) << stats_.total_packets.load() << "                        â•‘\n";
@@ -681,7 +702,7 @@ std::string DPIEngine::generateReport() const {
     ss << "â•‘   TCP Packets:        " << std::setw(12) << stats_.tcp_packets.load() << "                        â•‘\n";
     ss << "â•‘   UDP Packets:        " << std::setw(12) << stats_.udp_packets.load() << "                        â•‘\n";
     
-    ss << "â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£\n";
+    ss << "â• â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•£\n";
     ss << "â•‘ FILTERING STATISTICS                                          â•‘\n";
     ss << "â•‘   Forwarded:          " << std::setw(12) << stats_.forwarded_packets.load() << "                        â•‘\n";
     ss << "â•‘   Dropped/Blocked:    " << std::setw(12) << stats_.dropped_packets.load() << "                        â•‘\n";
@@ -696,7 +717,7 @@ std::string DPIEngine::generateReport() const {
     // pipeline must keep capture-layer drops near zero under load.
     if (capture_stats_available_) {
         const CaptureStats& cstats = capture_stats_;
-            ss << "â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£\n";
+            ss << "â• â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•£\n";
             ss << "â•‘ CAPTURE STATISTICS (pcap)                                    â•‘\n";
             ss << "â•‘   Received:          " << std::setw(12) << cstats.received << "                        â•‘\n";
             ss << "â•‘   Dropped:           " << std::setw(12) << cstats.dropped << "                        â•‘\n";
@@ -711,7 +732,7 @@ std::string DPIEngine::generateReport() const {
 
     if (lb_manager_) {
         auto lb_stats = lb_manager_->getAggregatedStats();
-        ss << "â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£\n";
+        ss << "â• â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•£\n";
         ss << "â•‘ LOAD BALANCER STATISTICS                                      â•‘\n";
         ss << "â•‘   LB Received:        " << std::setw(12) << lb_stats.total_received << "                        â•‘\n";
         ss << "â•‘   LB Dispatched:      " << std::setw(12) << lb_stats.total_dispatched << "                        â•‘\n";
@@ -719,7 +740,7 @@ std::string DPIEngine::generateReport() const {
     
     if (fp_manager_) {
         auto fp_stats = fp_manager_->getAggregatedStats();
-        ss << "â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£\n";
+        ss << "â• â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•£\n";
         ss << "â•‘ FAST PATH STATISTICS                                          â•‘\n";
         ss << "â•‘   FP Processed:       " << std::setw(12) << fp_stats.total_processed << "                        â•‘\n";
         ss << "â•‘   FP Forwarded:       " << std::setw(12) << fp_stats.total_forwarded << "                        â•‘\n";
@@ -729,7 +750,7 @@ std::string DPIEngine::generateReport() const {
     
     if (rule_manager_) {
         auto rule_stats = rule_manager_->getStats();
-        ss << "â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£\n";
+        ss << "â• â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•£\n";
         ss << "â•‘ BLOCKING RULES                                                â•‘\n";
         ss << "â•‘   Blocked IPs:        " << std::setw(12) << rule_stats.blocked_ips << "                        â•‘\n";
         ss << "â•‘   Blocked Apps:       " << std::setw(12) << rule_stats.blocked_apps << "                        â•‘\n";
@@ -738,7 +759,7 @@ std::string DPIEngine::generateReport() const {
     }
 
     const auto& sec_stats = EventSink::instance().getStats();
-    ss << "â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£\n";
+    ss << "â• â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•£\n";
     ss << "â•‘ SECURITY & THREAT DETECTION (TRACK B)                         â•‘\n";
     ss << "â•‘   Port Scan Alerts:   " << std::setw(12) << sec_stats.port_scan_alerts.load() << "                        â•‘\n";
     ss << "â•‘   SYN Flood Alerts:   " << std::setw(12) << sec_stats.syn_flood_alerts.load() << "                        â•‘\n";
@@ -753,7 +774,7 @@ std::string DPIEngine::generateReport() const {
         ss << "â•‘   VPN CIDR Ranges:    " << std::setw(12) << vpn_detector_->getRangeCount() << "                        â•‘\n";
     }
     
-    ss << "â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•\n";
+    ss << "â•šâ•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?\n";
     
     return ss.str();
 }
@@ -805,4 +826,31 @@ void DPIEngine::printStatus() const {
     }
 }
 
-} // namespace DPI
+
+// AI Analyst Agent endpoints implementations
+// These are called via FastAPI routes /api/ai/stats, /api/ai/events, /api/ai/blocked
+
+const DPIStats& DPIEngine::get_stats() const {
+    std::lock_guard<std::mutex> lock(engine_stats_mutex_);
+    return engine_stats_;
+}
+
+std::vector<SecurityAlert> DPIEngine::get_events(int limit) const {
+    std::lock_guard<std::mutex> lock(events_mutex_);
+    std::vector<SecurityAlert> result;
+    if (events_.empty()) return result;
+    int count = std::min(limit, (int)events_.size());
+    for (int i = events_.size() - count; i < (int)events_.size(); i++) {
+        result.push_back(events_[i]);
+    }
+    return result;
+}
+
+std::vector<DPIEngine::BlockedDomain> DPIEngine::get_blocked() const {
+    std::lock_guard<std::mutex> lock(blocked_mutex_);
+    std::vector<BlockedDomain> result = blocked_domains_;
+    return result;
+}
+
+}
+// namespace DPI

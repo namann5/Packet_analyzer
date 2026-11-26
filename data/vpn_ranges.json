@@ -1,22 +1,70 @@
 [
   {
-    "cidr": "10.8.0.0/24",
-    "name": "OpenVPN Default Subnet"
+    "cidr": "193.138.218.0/24",
+    "name": "Mullvad VPN (Sweden - AS62240)"
   },
   {
-    "cidr": "10.13.13.0/24",
-    "name": "WireGuard Subnet"
+    "cidr": "185.213.154.0/24",
+    "name": "Mullvad VPN (Netherlands - AS62240)"
   },
   {
-    "cidr": "198.18.0.0/15",
-    "name": "Commercial VPN Ranges (Example)"
+    "cidr": "194.242.61.0/24",
+    "name": "Mullvad VPN (Switzerland - AS62240)"
+  },
+  {
+    "cidr": "198.54.130.0/24",
+    "name": "Mullvad VPN (US East - AS62240)"
+  },
+  {
+    "cidr": "185.159.157.0/24",
+    "name": "ProtonVPN (Switzerland - AS62366)"
+  },
+  {
+    "cidr": "185.159.158.0/24",
+    "name": "ProtonVPN (Iceland - AS62366)"
+  },
+  {
+    "cidr": "37.120.217.0/24",
+    "name": "ProtonVPN (Netherlands - AS62366)"
   },
   {
     "cidr": "185.220.101.0/24",
-    "name": "Privacy VPN Exit Node"
+    "name": "NordVPN / Surfshark Privacy Gateway"
   },
   {
-    "cidr": "192.168.100.0/24",
-    "name": "Corporate IPSec Gateway"
+    "cidr": "195.181.164.0/24",
+    "name": "NordVPN (UK London Exit - AS9009)"
+  },
+  {
+    "cidr": "89.187.160.0/24",
+    "name": "NordVPN / Datacamp Commercial VPN"
+  },
+  {
+    "cidr": "198.54.131.0/24",
+    "name": "IVPN Gateway (US East - AS396356)"
+  },
+  {
+    "cidr": "185.220.100.0/24",
+    "name": "Tor Exit Relay Network (Pool 1)"
+  },
+  {
+    "cidr": "185.220.102.0/24",
+    "name": "Tor Exit Relay Network (Pool 2)"
+  },
+  {
+    "cidr": "171.25.193.0/24",
+    "name": "Tor Exit Node (Zwiebelfreunde)"
+  },
+  {
+    "cidr": "10.8.0.0/24",
+    "name": "OpenVPN Default Server Subnet"
+  },
+  {
+    "cidr": "10.13.13.0/24",
+    "name": "WireGuard Default Tunnel Subnet"
+  },
+  {
+    "cidr": "10.99.0.0/24",
+    "name": "IPSec / StrongSwan Virtual Subnet"
   }
 ]
