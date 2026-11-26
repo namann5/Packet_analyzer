@@ -308,7 +308,11 @@ async def handle_engine_connection(reader: asyncio.StreamReader, writer: asyncio
                         event = json.loads(line)
                         if isinstance(event, dict):
                             state.ingest(event)
-                            if manager._clients and event.get("event") in ("anomaly", "app_classified"):
+                            if manager._clients and event.get("event") in (
+                                "anomaly",
+                                "app_classified",
+                                "security_alert",
+                            ):
                                 await manager.broadcast(event)
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         pass
@@ -356,6 +360,8 @@ async def mock_feeder() -> None:
             anomaly = _maybe_anomaly_event()
             if anomaly:
                 state.ingest(anomaly)
+                if manager._clients:
+                    await manager.broadcast(anomaly)
 
 
 # ---------------------------------------------------------------------------
