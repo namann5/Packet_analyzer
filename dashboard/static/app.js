@@ -142,6 +142,7 @@ function normalizeConn(c) {
     dst_ip: dst,
     dst_port: dstPort,
     protocol: proto,
+    transportProto: rawProto,
     badgeProto: badgeProto,
     app: app,
     size: size,
@@ -497,8 +498,9 @@ function selectPacket(tr, p) {
 function renderProtocolDissection(p) {
   const tree = document.getElementById("proto-tree");
   if (!tree) return;
-  const isUdp = p.protocol === "UDP";
-  const protoNum = isUdp ? 17 : (p.protocol === "ICMP" ? 1 : 6);
+  const transport = String(p.transportProto || (p.protocol === "DNS" ? "UDP" : p.protocol) || "TCP").toUpperCase();
+  const isUdp = transport === "UDP";
+  const protoNum = isUdp ? 17 : (transport === "ICMP" ? 1 : 6);
 
   const layers = [
     {
@@ -514,7 +516,7 @@ function renderProtocolDissection(p) {
         ["Version", "4"],
         ["Header Length", "20 bytes (5)"],
         ["Total Length", `${p.size} bytes`],
-        ["Protocol", `${p.protocol} (${protoNum})`],
+        ["Protocol", `${transport} (${protoNum})`],
         ["Source Address", p.src_ip],
         ["Destination Address", p.dst_ip],
       ],
@@ -572,8 +574,9 @@ function renderHexDump(p) {
   const srcParts = (p.src_ip || "127.0.0.1").split(".").map(x => parseInt(x, 10) || 0);
   const dstParts = (p.dst_ip || "127.0.0.1").split(".").map(x => parseInt(x, 10) || 0);
   const totalLen = Math.min(Math.max(p.size || 64, 48), 128);
-  const isUdp = p.protocol === "UDP";
-  const protoNum = isUdp ? 17 : 6;
+  const transport = String(p.transportProto || (p.protocol === "DNS" ? "UDP" : p.protocol) || "TCP").toUpperCase();
+  const isUdp = transport === "UDP";
+  const protoNum = isUdp ? 17 : (transport === "ICMP" ? 1 : 6);
 
   const bytes = [];
   bytes.push(0x45, 0x00, (p.size >> 8) & 0xff, p.size & 0xff);
@@ -889,7 +892,19 @@ function addNetworkConnection(srcIp, dstIp) {
     existing.count = (existing.count || 1) + 1;
     existing.wan = isWan;
   } else {
-    if (networkLinks.length >= 35) networkLinks.shift();
+    if (networkLinks.length >= 35) {
+      const evicted = networkLinks.shift();
+      if (evicted) {
+        const evictedIds = [evicted.source?.id || evicted.source, evicted.target?.id || evicted.target];
+        for (const id of evictedIds) {
+          if (!id || id === "Gateway") continue;
+          const stillReferenced = networkLinks.some(
+            l => (l.source?.id || l.source) === id || (l.target?.id || l.target) === id
+          );
+          if (!stillReferenced) delete networkNodes[id];
+        }
+      }
+    }
     networkLinks.push({ source: srcIp, target: dstIp, count: 1, wan: isWan });
   }
 
@@ -913,11 +928,11 @@ function updateGraphUI() {
     d => `${d.source.id || d.source}->${d.target.id || d.target}`
   );
   linkSelection.exit().remove();
-  const linkEnter = linkSelection.enter().append("line")
+  const linkEnter = linkSelection.enter().append("line");
+  const allLinks = linkEnter.merge(linkSelection)
     .attr("class", d => "link" + (d.wan ? " wan" : ""))
     .attr("stroke-width", d => Math.min(1 + Math.log2(d.count || 1), 2.5))
     .attr("marker-end", d => d.wan ? "url(#arrow-orange)" : "url(#arrow-cyan)");
-  const allLinks = linkEnter.merge(linkSelection);
 
   const nodeSelection = nodeGroup.selectAll("g.node").data(nodes, d => d.id);
   nodeSelection.exit().remove();
@@ -955,13 +970,25 @@ function updateGraphUI() {
     .attr("text-anchor", "middle")
     .text(d => d.label || d.id);
 
-  nodeEnter.on("click", (e, d) => {
+  function filterByNode(d) {
     const input = document.getElementById("bpf-filter");
     if (input) {
       input.value = d.id;
       applyFilter();
     }
-  });
+  }
+
+  nodeEnter
+    .attr("tabindex", "0")
+    .attr("role", "button")
+    .attr("aria-label", d => `Filter stream by ${d.label || d.id}`)
+    .on("click", (e, d) => filterByNode(d))
+    .on("keydown", (e, d) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        filterByNode(d);
+      }
+    });
 
   const allNodes = nodeEnter.merge(nodeSelection);
   simulation.on("tick", () => {
@@ -1054,7 +1081,7 @@ function connectWebSocket() {
         if (data.event === "anomaly" || data.event === "security_alert") {
           addSecurityAlert(data);
         }
-        if (data.event === "app_classified" || data.event === "anomaly" || data.event === "security_alert") {
+        if (data.event === "app_classified") {
           hasReceivedTraffic = true;
           const norm = normalizeConn(data);
           connStore.unshift(norm);
@@ -1244,6 +1271,7 @@ function setCaptureBadgeState(mode) {
   const sbStatus = document.getElementById("sb-status");
   const sbDot = document.getElementById("sb-dot-status");
   const pauseBtn = document.getElementById("btn-pause");
+  const footerPauseBtn = document.getElementById("footer-pause-btn");
 
   if (mode === "active") {
     if (badge) badge.className = "capture-badge";
@@ -1251,18 +1279,33 @@ function setCaptureBadgeState(mode) {
     if (sbStatus) { sbStatus.textContent = "Active"; sbStatus.style.color = "#7ee787"; }
     if (sbDot) sbDot.className = "sb-dot green";
     if (pauseBtn) { pauseBtn.textContent = "⏸ Pause"; pauseBtn.setAttribute("aria-pressed", "false"); }
+    if (footerPauseBtn) {
+      footerPauseBtn.textContent = "⏸";
+      footerPauseBtn.setAttribute("aria-pressed", "false");
+      footerPauseBtn.setAttribute("aria-label", "Pause live feed");
+    }
   } else if (mode === "paused") {
     if (badge) badge.className = "capture-badge paused";
     if (text) text.textContent = "Feed Paused";
     if (sbStatus) { sbStatus.textContent = "Paused"; sbStatus.style.color = "#ffdf85"; }
     if (sbDot) sbDot.className = "sb-dot orange";
     if (pauseBtn) { pauseBtn.textContent = "▶ Resume"; pauseBtn.setAttribute("aria-pressed", "true"); }
+    if (footerPauseBtn) {
+      footerPauseBtn.textContent = "▶";
+      footerPauseBtn.setAttribute("aria-pressed", "true");
+      footerPauseBtn.setAttribute("aria-label", "Resume live feed");
+    }
   } else {
     if (badge) badge.className = "capture-badge stopped";
     if (text) text.textContent = "Stopped";
     if (sbStatus) { sbStatus.textContent = "Stopped"; sbStatus.style.color = "#ffb4ae"; }
     if (sbDot) sbDot.className = "sb-dot red";
     if (pauseBtn) { pauseBtn.textContent = "▶ Resume"; pauseBtn.setAttribute("aria-pressed", "true"); }
+    if (footerPauseBtn) {
+      footerPauseBtn.textContent = "▶";
+      footerPauseBtn.setAttribute("aria-pressed", "true");
+      footerPauseBtn.setAttribute("aria-label", "Resume live feed");
+    }
   }
 }
 
@@ -1366,7 +1409,12 @@ window.addEventListener("load", () => {
   fetchInitialEvents();
   fetchStats();
   connectWebSocket();
-  setInterval(fetchStats, 1500);
+  // Poll /api/stats only when WebSocket is not open so stats/pps aren't double-sampled
+  setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      fetchStats();
+    }
+  }, 1500);
 });
 
 window.addEventListener("resize", () => {

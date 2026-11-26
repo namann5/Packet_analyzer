@@ -357,6 +357,8 @@ def test_api_report_pdf():
     assert "(VPN Detections)" in pdf_text
     assert "(VPN Blocks)" in pdf_text
     assert "(1)" in pdf_text
+    assert "(Share)" in pdf_text
+    assert "(100.0%)" in pdf_text
 
 
 # ============================================================================
@@ -736,9 +738,17 @@ def test_issue_20_ui_structure_accessibility_and_no_conflict_markers():
     assert "Stage 04" in body
     assert "Active Security Alerts" in body
 
-    # Alert feed filtering across all 5 detector types
-    for alert_type in ("MALICIOUS", "VPN_DETECTED", "PORT_SCAN", "SYN_FLOOD", "DNS_TUNNEL"):
+    # Alert feed filtering across all 5 detector types + ALL
+    for alert_type in ("ALL", "MALICIOUS", "VPN_DETECTED", "PORT_SCAN", "SYN_FLOOD", "DNS_TUNNEL"):
         assert f'data-type="{alert_type}"' in body
+
+    # Accessibility: no noisy aria-live on toolbar-stats, alert-feed-list, or footer
+    assert '<div class="toolbar-stats">' in body
+    assert '<span class="idle-pill" id="tb-idle-pill" aria-live="polite">' in body
+    assert '<ul class="alert-feed-list" id="alert-feed-list">' in body
+    assert '<span class="alert-count-badge" id="alert-feed-count" aria-live="polite">' in body
+    assert '<footer class="statusbar">' in body
+    assert 'id="footer-pause-btn" aria-pressed="false"' in body
 
     # Empty states for connections, alerts, and charts
     assert "No packets captured yet" in body
@@ -757,6 +767,77 @@ def test_issue_20_ui_structure_accessibility_and_no_conflict_markers():
     assert "niceCeil" in res_js.text
     assert "escapeHtml" in res_js.text
     assert "security_alert" in res_js.text
+    assert "transportProto" in res_js.text
+    assert "footerPauseBtn" in res_js.text
+
+    # Behavioral JS test for alert filtering (when node is available)
+    import shutil
+    import subprocess
+    if shutil.which("node"):
+        js_harness = r"""
+const fs = require("fs");
+const vm = require("vm");
+const elements = {};
+function makeEl(id) {
+  return {
+    id, textContent: "", _innerHTML: "", value: "", style: {},
+    get innerHTML() { return this._innerHTML; },
+    set innerHTML(v) { this._innerHTML = String(v); if (!v) this.children = []; },
+    dataset: {}, children: [],
+    classList: {
+      _s: new Set(),
+      add(c) { this._s.add(c); },
+      remove(c) { this._s.delete(c); },
+      toggle(c, b) { if (b) this._s.add(c); else this._s.delete(c); },
+      contains(c) { return this._s.has(c); }
+    },
+    attributes: {},
+    setAttribute(k, v) { this.attributes[k] = String(v); },
+    getAttribute(k) { return this.attributes[k]; },
+    appendChild(child) { this.children.push(child); },
+    querySelectorAll() { return []; },
+    addEventListener() {}
+  };
+}
+["alert-feed-list", "alert-feed-count", "alert-autoscroll-chk"].forEach(id => elements[id] = makeEl(id));
+const filterBtns = ["ALL", "MALICIOUS", "VPN_DETECTED", "PORT_SCAN", "SYN_FLOOD", "DNS_TUNNEL"].map(t => {
+  const b = makeEl("btn-" + t);
+  b.dataset = { type: t };
+  return b;
+});
+const ctx = {
+  console, Date, Math, Set, Array, Object, Number, String, JSON,
+  document: {
+    getElementById: (id) => elements[id] || null,
+    querySelectorAll: (sel) => sel === ".alert-filter-btn" ? filterBtns : [],
+    createElement: (tag) => makeEl(tag),
+  },
+  window: { addEventListener() {} },
+  location: { protocol: "http:", host: "127.0.0.1:8000" },
+  WebSocket: { OPEN: 1 },
+  setInterval() {},
+  setTimeout() {},
+};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync("dashboard/static/app.js", "utf8"), ctx);
+ctx.addSecurityAlert({ event: "security_alert", alert_type: "MALICIOUS", detail: "bad.test", ts: 1710000001 });
+ctx.addSecurityAlert({ event: "security_alert", alert_type: "VPN_DETECTED", detail: "WireGuard", ts: 1710000002 });
+ctx.addSecurityAlert({ event: "anomaly", type: "PORT_SCAN", detail: { src_ip: "10.0.0.2" }, ts: 1710000003 });
+ctx.addSecurityAlert({ event: "anomaly", type: "SYN_FLOOD", detail: { src_ip: "10.0.0.3" }, ts: 1710000004 });
+ctx.addSecurityAlert({ event: "anomaly", type: "DNS_TUNNEL", detail: { src_ip: "10.0.0.4" }, ts: 1710000005 });
+ctx.setAlertFilter("ALL");
+if (elements["alert-feed-list"].children.length !== 5) throw new Error("Expected 5 alerts for ALL");
+if (elements["alert-feed-count"].textContent !== "5 alerts") throw new Error("Expected '5 alerts'");
+for (const t of ["MALICIOUS", "VPN_DETECTED", "PORT_SCAN", "SYN_FLOOD", "DNS_TUNNEL"]) {
+  ctx.setAlertFilter(t);
+  if (elements["alert-feed-list"].children.length !== 1) throw new Error("Expected 1 alert for " + t);
+  if (elements["alert-feed-count"].textContent !== "1 / 5 shown") throw new Error("Expected '1 / 5 shown' for " + t);
+}
+const dnsPkt = ctx.normalizeConn({ event: "app_classified", app: "DNS", five_tuple: { proto: "UDP", dst_port: 53, src_port: 51515, src_ip: "10.0.0.5", dst_ip: "8.8.8.8" }, bytes: 90 });
+if (dnsPkt.protocol !== "DNS" || dnsPkt.transportProto !== "UDP") throw new Error("UDP DNS transport not preserved");
+"""
+        proc = subprocess.run(["node", "-e", js_harness], capture_output=True, text=True, check=False)
+        assert proc.returncode == 0, f"JS alert filter / UDP DNS test failed: {proc.stderr}"
 
 
 def test_issue_20_reports_empty_states_and_alerts_alignment():
@@ -772,6 +853,10 @@ def test_issue_20_reports_empty_states_and_alerts_alignment():
     empty_pdf = client.get("/api/report?format=pdf")
     assert empty_pdf.status_code == 200
     assert empty_pdf.content.startswith(b"%PDF")
+    empty_pdf_text = _extract_pdf_text(empty_pdf.content)
+    assert "No security alerts recorded during this session." in empty_pdf_text
+    assert "No application traffic recorded yet." in empty_pdf_text
+    assert "No blocked traffic recorded." in empty_pdf_text
 
     # Populated with security alert + traffic
     state.ingest({
@@ -792,6 +877,7 @@ def test_issue_20_reports_empty_states_and_alerts_alignment():
 
     pop_html = client.get("/api/report?format=html")
     assert pop_html.status_code == 200
+    assert "total security alert(s) recorded across detectors" in pop_html.text
     assert "evil.example.net" in pop_html.text
     assert "MALICIOUS" in pop_html.text
     assert "Google" in pop_html.text
@@ -799,6 +885,10 @@ def test_issue_20_reports_empty_states_and_alerts_alignment():
     pop_pdf = client.get("/api/report?format=pdf")
     assert pop_pdf.status_code == 200
     assert pop_pdf.content.startswith(b"%PDF")
+    pop_pdf_text = _extract_pdf_text(pop_pdf.content)
+    assert "evil.example.net" in pop_pdf_text
+    assert "(MALICIOUS)" in pop_pdf_text
+    assert "(Google)" in pop_pdf_text
 
 
 def test_issue_20_handle_engine_connection_broadcasts_security_alert():

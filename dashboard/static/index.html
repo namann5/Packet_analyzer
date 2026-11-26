@@ -1419,8 +1419,8 @@ body {
 
   <div class="tb-spacer"></div>
 
-  <div class="toolbar-stats" aria-live="polite">
-    <span class="idle-pill" id="tb-idle-pill">Awaiting traffic</span>
+  <div class="toolbar-stats">
+    <span class="idle-pill" id="tb-idle-pill" aria-live="polite">Awaiting traffic</span>
     <div class="tb-stat-box"><span class="lbl">pps:</span><span class="val" id="tb-pps">0</span></div>
     <div class="tb-stat-box"><span class="lbl">Rate:</span><span class="val" id="tb-tput">0 bps</span></div>
     <div class="tb-stat-box"><span class="lbl">Vol:</span><span class="val" id="tb-buf">0 B</span></div>
@@ -1482,7 +1482,7 @@ body {
     </div>
     <div class="pkt-panel-footer">
       <button type="button" class="playback-btn" aria-label="Jump to newest packet" title="Newest packet" onclick="jumpToTop()">|◀</button>
-      <button type="button" class="playback-btn" id="footer-pause-btn" aria-label="Toggle feed pause" title="Toggle pause" onclick="togglePause()">⏸</button>
+      <button type="button" class="playback-btn" id="footer-pause-btn" aria-pressed="false" aria-label="Pause live feed" title="Toggle pause" onclick="togglePause()">⏸</button>
       <button type="button" class="playback-btn" aria-label="Jump to oldest buffered packet" title="Oldest packet" onclick="jumpToBottom()">▶|</button>
       <span style="font-size:10px">Buffer</span>
       <div class="buffer-bar-wrap" aria-label="Ring buffer fill">
@@ -1524,7 +1524,7 @@ body {
         <div class="alert-filter-spacer"></div>
       </div>
 
-      <ul class="alert-feed-list" id="alert-feed-list" aria-live="polite">
+      <ul class="alert-feed-list" id="alert-feed-list">
         <li id="alert-empty-state">
           <div class="empty-state-box">
             <strong>No active security alerts</strong>
@@ -1644,13 +1644,13 @@ body {
 </section>
 
 <!-- ── Footer Status Bar ── -->
-<footer class="statusbar" role="status">
-  <div class="sb-item">
+<footer class="statusbar">
+  <div class="sb-item" role="status">
     <span class="sb-dot green" id="sb-dot-status" aria-hidden="true"></span>
     <span class="sb-label">Capture:</span>
     <span class="sb-val" id="sb-status" style="color:#7ee787">Active</span>
   </div>
-  <div class="sb-item">
+  <div class="sb-item" role="status">
     <span class="sb-dot orange" id="sb-dot-ws" aria-hidden="true"></span>
     <span class="sb-label">WebSocket:</span>
     <span class="sb-val" id="sb-ws" style="color:#ffdf85">Connecting...</span>

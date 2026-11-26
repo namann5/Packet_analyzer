@@ -853,8 +853,10 @@ def _render_html_report() -> str:
         )
     )
 
+    REPORT_RECENT_EVENT_LIMIT = 25
+
     alert_rows_list = []
-    for ev in list(state.events)[:25]:
+    for ev in list(state.events)[:REPORT_RECENT_EVENT_LIMIT]:
         ts_str, atype, action, detail_text = _summarize_alert_event(ev)
         fg, bg, border = _ALERT_BADGE_COLORS.get(
             atype, ("#c9d1d9", "rgba(139,148,158,0.15)", "rgba(139,148,158,0.35)")
@@ -879,9 +881,9 @@ def _render_html_report() -> str:
     )
     alert_banner_class = "banner-alert" if total_alerts > 0 else "banner-ok"
     alert_banner_text = (
-        f"{total_alerts:,} active security alert(s) recorded across detectors"
+        f"{total_alerts:,} total security alert(s) recorded across detectors"
         if total_alerts > 0
-        else "No active security alerts recorded — traffic nominal"
+        else "No security alerts recorded — traffic nominal"
     )
 
     return f"""<!DOCTYPE html>
@@ -1227,7 +1229,7 @@ async def export_report(format: str = "html"):
             story.append(Spacer(1, 12))
 
             story.append(Paragraph("Recent Security Alerts", heading_style))
-            recent_events = list(state.events)[:20]
+            recent_events = list(state.events)[:25]
             if recent_events:
                 ev_table_rows = [["Time", "Type", "Action", "Detail"]]
                 for ev in recent_events:
@@ -1298,10 +1300,17 @@ async def export_report(format: str = "html"):
             story.append(Paragraph("Blocked Traffic by Reason", heading_style))
             blocked_items = sorted(snap["blocked_reasons"].items(), key=lambda x: -x[1])
             if blocked_items:
-                blk_rows = [["Reason", "Count"]]
+                total_blk = max(1, sum(c for _, c in blocked_items))
+                blk_rows = [["Reason", "Count", "Share"]]
                 for reason, count in blocked_items:
-                    blk_rows.append([xml_escape(str(reason)), f"{count:,}"])
-                blk_table = Table(blk_rows, colWidths=[340, 180])
+                    blk_rows.append(
+                        [
+                            xml_escape(str(reason)),
+                            f"{count:,}",
+                            f"{(count / total_blk) * 100:.1f}%",
+                        ]
+                    )
+                blk_table = Table(blk_rows, colWidths=[260, 130, 130])
                 blk_table.setStyle(
                     TableStyle(
                         [
