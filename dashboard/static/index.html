@@ -770,9 +770,9 @@ body {
 <!-- ── Control Toolbar ── -->
 <div class="toolbar">
   <!-- Framed Interface Selector -->
-  <div class="toolbar-frame">
-    <span class="toolbar-frame-label">Interface</span>
-    <select id="iface-select">
+  <div class="toolbar-frame" title="Interface selection is informational only; set the capture interface from the engine command line">
+    <span class="toolbar-frame-label">Interface (display only)</span>
+    <select id="iface-select" disabled style="opacity:0.55;cursor:not-allowed">
       <option value="eth0">Interface: eth0 (Active)</option>
       <option value="lo">Interface: lo (Loopback)</option>
       <option value="wlan0">Interface: wlan0 (Wi-Fi)</option>
@@ -780,16 +780,16 @@ body {
     </select>
   </div>
 
-  <!-- Framed BPF Filter -->
-  <div class="toolbar-frame">
-    <span class="toolbar-frame-label">BPF/Wireshark-style Filter</span>
-    <input id="bpf-filter" placeholder="tcp or udp and port 80" type="text" oninput="applyFilter()"/>
+  <!-- Framed Text Search Filter (substring match, not BPF expression parser) -->
+  <div class="toolbar-frame" title="Text substring search across IP, protocol, app and info fields">
+    <span class="toolbar-frame-label">Text Search Filter</span>
+    <input id="bpf-filter" placeholder="e.g. 192.168.1.1  or  DNS  or  BLOCKED" type="text" oninput="applyFilter()"/>
   </div>
 
   <button class="btn-capture btn-start" onclick="startCapture()">▶ START CAPTURE</button>
   <button class="btn-capture btn-pause" id="btn-pause" onclick="togglePause()">⏸ PAUSE FEED</button>
-  <button class="btn-capture btn-stop" onclick="stopCapture()">■ STOP</button>
-  <button class="btn-capture btn-export" onclick="exportReport('html')">⬆ EXPORT PCAP</button>
+  <button class="btn-capture btn-stop" onclick="stopCapture()" title="Stop this browser&#39;s feed display (engine capture continues)">■ STOP FEED</button>
+  <button class="btn-capture btn-export" onclick="exportReport('html')" title="Export HTML/PDF analysis report">⬆ Export Report</button>
 
   <div class="tb-spacer"></div>
 
@@ -808,7 +808,7 @@ body {
   <!-- Left: Live Packet Stream -->
   <div class="pkt-panel" id="pkt-panel">
     <div class="panel-title-bar">
-      <span>Live Packet Stream</span>
+      <span>Classified Connections <span style="font-size:10px;opacity:0.55;font-weight:400">(DPI flow events)</span></span>
       <label class="autoscroll-label">
         <input type="checkbox" id="autoscroll-chk">
         Pause Autoscroll
@@ -931,11 +931,22 @@ body {
 // ── Global State ──────────────────────────────────────────────────
 let isStreamPaused = false;
 let connStore = [];
+let seenConnKeys = new Set();   // dedup: REST bootstrap + WS events
 let selectedRow = null;
 let lastPacketCount = 0;
 let lastTime = Date.now();
 let activeFilterText = '';
 let ws = null;
+
+// ── Security helper: escape HTML special chars ─────────────────────
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 // ── Format helpers ────────────────────────────────────────────────
 function fmtBytes(b) {
@@ -966,9 +977,11 @@ function fmtTime(ts) {
 // ── Normalize Raw Connection Object from Backend Contract ─────────
 function normalizeConn(c) {
   const ft = c.five_tuple || {};
-  const src = ft.src_ip || c.src_ip || "-";
-  const dst = ft.dst_ip || c.dst_ip || "-";
-  const rawProto = (ft.proto || c.proto || "TCP").toUpperCase();
+  const detail = c.detail || {};
+  // Anomaly events store IPs under detail.src_ip / detail.target
+  const src = ft.src_ip || c.src_ip || detail.src_ip || "-";
+  const dst = ft.dst_ip || c.dst_ip || detail.target || "-";
+  const transportProto = (ft.proto || c.proto || "TCP").toUpperCase();
   const dstPort = ft.dst_port || c.dst_port || 0;
   const srcPort = ft.src_port || c.src_port || 0;
   const app = c.app || "Unknown";
@@ -977,8 +990,8 @@ function normalizeConn(c) {
   const isAnomaly = c.event === 'anomaly';
   const reason = c.reason || (isAnomaly ? c.type : null);
 
-  // Derive protocol badge
-  let proto = rawProto;
+  // Derive application-layer protocol badge, keeping transport separate
+  let proto = transportProto;
   if (app === 'DNS' || dstPort === 53) proto = 'DNS';
   else if (dstPort === 443) proto = 'TLS';
   else if (dstPort === 80) proto = 'HTTP';
@@ -1010,6 +1023,7 @@ function normalizeConn(c) {
     dst_ip: dst,
     dst_port: dstPort,
     protocol: proto,
+    transportProto: transportProto,
     app: app,
     size: size,
     info: info,
@@ -1037,15 +1051,36 @@ function addPacketRow(p, isPrepend = false) {
 
   const statusClass = p.blocked ? 'status-dropped' : (p.alert ? 'status-warning' : 'status-captured');
 
-  tr.innerHTML = `
-    <td style="color:var(--text-dim)">${fmtTime(p.timestamp)}</td>
-    <td style="color:#f0f6fc;font-weight:500">${p.src_ip}</td>
-    <td style="color:var(--text-dim)"><span style="opacity:0.6">→</span> ${p.dst_ip}</td>
-    <td><span class="proto-badge proto-${p.protocol}">${p.protocol}</span></td>
-    <td class="r" style="color:var(--text-dim)">${p.size}</td>
-    <td style="color:inherit;max-width:240px;overflow:hidden;text-overflow:ellipsis" title="${p.info}">${p.info}</td>
-    <td><span class="status-pill ${statusClass}">${p.status}</span></td>
-  `;
+  // Use DOM nodes / escapeHtml to prevent XSS from engine-controlled fields
+  const time = document.createElement('td');
+  time.style.color = 'var(--text-dim)';
+  time.textContent = fmtTime(p.timestamp);
+
+  const srcTd = document.createElement('td');
+  srcTd.style.cssText = 'color:#f0f6fc;font-weight:500';
+  srcTd.textContent = p.src_ip;
+
+  const dstTd = document.createElement('td');
+  dstTd.style.color = 'var(--text-dim)';
+  dstTd.innerHTML = `<span style="opacity:0.6">→</span> ${escapeHtml(p.dst_ip)}`;
+
+  const protoTd = document.createElement('td');
+  protoTd.innerHTML = `<span class="proto-badge proto-${escapeHtml(p.protocol)}">${escapeHtml(p.protocol)}</span>`;
+
+  const sizeTd = document.createElement('td');
+  sizeTd.className = 'r';
+  sizeTd.style.color = 'var(--text-dim)';
+  sizeTd.textContent = p.size;
+
+  const infoTd = document.createElement('td');
+  infoTd.style.cssText = 'color:inherit;max-width:240px;overflow:hidden;text-overflow:ellipsis';
+  infoTd.title = p.info;
+  infoTd.textContent = p.info;
+
+  const statusTd = document.createElement('td');
+  statusTd.innerHTML = `<span class="status-pill ${statusClass}">${escapeHtml(p.status)}</span>`;
+
+  tr.append(time, srcTd, dstTd, protoTd, sizeTd, infoTd, statusTd);
 
   tr.addEventListener('click', () => selectPacket(tr, p));
 
@@ -1117,8 +1152,12 @@ function selectPacket(tr, p) {
 
 function renderProtocolDissection(p) {
   const tree = document.getElementById('proto-tree');
-  const isUdp = p.protocol === 'UDP';
-  const protoNum = isUdp ? 17 : (p.protocol === 'ICMP' ? 1 : 6);
+  // Use the transport-layer protocol (TCP/UDP/ICMP) for the dissection view,
+  // not the application-layer badge (DNS/TLS/HTTP) so ICMP and UDP are correct.
+  const transport = (p.transportProto || p.protocol);
+  const isUdp = transport === 'UDP';
+  const isIcmp = transport === 'ICMP';
+  const protoNum = isUdp ? 17 : (isIcmp ? 1 : 6);
 
   const layers = [
     {
@@ -1134,13 +1173,13 @@ function renderProtocolDissection(p) {
         ['Version', '4'],
         ['Header Length', '20 bytes (5)'],
         ['Total Length', `${p.size} bytes`],
-        ['Protocol', `${p.protocol} (${protoNum})`],
+        ['Protocol', `${transport} (${protoNum})`],
         ['Source Address', p.src_ip],
         ['Destination Address', p.dst_ip]
       ]
     },
     {
-      title: `${isUdp ? 'User Datagram Protocol' : 'Transmission Control Protocol'}, Src Port: ${p.src_port}, Dst Port: ${p.dst_port}`,
+      title: `${isUdp ? 'User Datagram Protocol' : isIcmp ? 'Internet Control Message Protocol' : 'Transmission Control Protocol'}, Src Port: ${p.src_port}, Dst Port: ${p.dst_port}`,
       fields: [
         ['Source Port', `${p.src_port}`],
         ['Destination Port', `${p.dst_port}`],
@@ -1148,9 +1187,11 @@ function renderProtocolDissection(p) {
       ]
     },
     {
-      title: `Application Layer: ${p.app} (${p.status})`,
+      title: `Application Layer: ${p.app} · ${p.protocol} (${p.status})`,
       fields: [
         ['Classified Application', p.app],
+        ['App Protocol Badge', p.protocol],
+        ['Transport Protocol', transport],
         ['Inspection Result', p.blocked ? `BLOCKED [${p.reason || 'POLICY'}]` : 'ALLOWED'],
         ['Reason Code', p.reason || 'None'],
         ['Flow Info', p.info]
@@ -1162,13 +1203,13 @@ function renderProtocolDissection(p) {
     <div class="tree-layer ${idx >= 1 ? 'open' : ''}">
       <div class="tree-layer-header" onclick="this.parentElement.classList.toggle('open')">
         <span class="tree-arrow">▶</span>
-        <span>${layer.title}</span>
+        <span>${escapeHtml(layer.title)}</span>
       </div>
       <div class="tree-layer-content">
         ${layer.fields.map(([k, v]) => `
           <div class="tree-row">
-            <span class="tree-key">${k}:</span>
-            <span class="tree-val">${v}</span>
+            <span class="tree-key">${escapeHtml(k)}:</span>
+            <span class="tree-val">${escapeHtml(String(v))}</span>
           </div>
         `).join('')}
       </div>
@@ -1176,23 +1217,26 @@ function renderProtocolDissection(p) {
   `).join('');
 }
 
-// Construct genuine Hex Dump from actual IP, ports, app name and size
+// Reconstructed Hex View — the backend supplies no raw payload bytes.
+// The header fields (IP addresses, ports, length) are real; the payload bytes
+// are reconstructed from the DPI metadata.  A notice is shown at the top.
 function renderHexDump(p) {
   const hex = document.getElementById('hex-dump');
   const srcParts = (p.src_ip || "127.0.0.1").split('.').map(x => parseInt(x, 10) || 0);
   const dstParts = (p.dst_ip || "127.0.0.1").split('.').map(x => parseInt(x, 10) || 0);
   const totalLen = Math.min(p.size || 64, 128);
-  const isUdp = p.protocol === 'UDP';
+  const transport = (p.transportProto || p.protocol);
+  const isUdp = transport === 'UDP';
   const protoNum = isUdp ? 17 : 6;
 
   const bytes = [];
-  // Real IPv4 Header bytes
+  // IPv4 Header (real IPs/size from DPI event)
   bytes.push(0x45, 0x00, (p.size >> 8) & 0xff, p.size & 0xff);
   bytes.push(0x1a, 0x2b, 0x40, 0x00, 0x40, protoNum, 0x7a, 0xb1);
   bytes.push(...(srcParts.length === 4 ? srcParts : [127, 0, 0, 1]));
   bytes.push(...(dstParts.length === 4 ? dstParts : [127, 0, 0, 1]));
 
-  // Transport Header bytes (Real Ports)
+  // Transport Header (real ports from DPI event)
   bytes.push((p.src_port >> 8) & 0xff, p.src_port & 0xff, (p.dst_port >> 8) & 0xff, p.dst_port & 0xff);
   if (!isUdp) {
     bytes.push(0x00, 0x1f, 0x3c, 0x80, 0x00, 0x00, 0x00, 0x00, 0x50, 0x18, 0x01, 0xf5, 0x6f, 0x29, 0x00, 0x00);
@@ -1201,20 +1245,21 @@ function renderHexDump(p) {
     bytes.push((udpLen >> 8) & 0xff, udpLen & 0xff, 0x00, 0x00);
   }
 
-  // Application string payload (Real DPI App & Decision)
+  // Payload: app name + decision (DPI metadata, not raw payload)
   const appPayload = `${p.app} ${p.blocked ? '[BLOCKED: ' + (p.reason || '') + ']' : '[ALLOWED]'}`;
   for (let i = 0; i < appPayload.length; i++) {
     bytes.push(appPayload.charCodeAt(i));
   }
 
-  // Fill up to totalLen with packet data
+  // Pad remainder with deterministic bytes
   let seed = ((p.src_port || 1) + (p.dst_port || 1)) % 256;
   while (bytes.length < totalLen) {
     seed = (seed * 37 + 13) % 256;
     bytes.push(seed);
   }
 
-  let html = '';
+  let html = '<div style="color:var(--orange);font-size:10px;margin-bottom:4px;opacity:0.8">'
+    + '⚠ Reconstructed view — IP/port headers are real; payload bytes are unavailable from the DPI engine.</div>';
   for (let i = 0; i < bytes.length; i += 16) {
     const chunk = bytes.slice(i, i + 16);
     const offset = i.toString(16).padStart(4, '0');
@@ -1333,41 +1378,58 @@ function getNodeMeta(id) {
 function addNetworkConnection(srcIp, dstIp, isBlocked = false) {
   if (!srcIp || !dstIp || srcIp === '-' || dstIp === '-') return;
 
-  if (!networkNodes[srcIp]) {
-    const meta = getNodeMeta(srcIp);
-    networkNodes[srcIp] = { id: srcIp, ...meta };
-  }
-  if (!networkNodes[dstIp]) {
-    const meta = getNodeMeta(dstIp);
-    networkNodes[dstIp] = { id: dstIp, ...meta };
-  }
+  const isWan = !dstIp.startsWith('192.168.') && !dstIp.startsWith('10.0.') && !dstIp.startsWith('127.')
+                && dstIp !== 'Gateway';
 
-  const sourceId = srcIp;
-  const targetId = dstIp;
-  const isWan = !targetId.startsWith('192.168.') && !targetId.startsWith('10.0.') && !targetId.startsWith('127.');
+  // For WAN-bound flows: route client → Gateway → WAN so the Gateway is not isolated
+  const GATEWAY = 'Gateway';
+  const hops = isWan ? [[srcIp, GATEWAY], [GATEWAY, dstIp]] : [[srcIp, dstIp]];
 
-  let existing = networkLinks.find(
-    l => (l.source === sourceId || l.source?.id === sourceId) &&
-         (l.target === targetId || l.target?.id === targetId)
-  );
+  for (const [src, dst] of hops) {
+    if (!networkNodes[src]) networkNodes[src] = { id: src, ...getNodeMeta(src) };
+    if (!networkNodes[dst]) networkNodes[dst] = { id: dst, ...getNodeMeta(dst) };
 
-  if (existing) {
-    existing.count = (existing.count || 1) + 1;
-    existing.wan = isWan;
-  } else {
-    if (networkLinks.length >= 35) {
-      networkLinks.shift();
+    const hopWan = !dst.startsWith('192.168.') && !dst.startsWith('10.0.') && !dst.startsWith('127.') && dst !== GATEWAY;
+
+    let existing = networkLinks.find(
+      l => (l.source === src || l.source?.id === src) &&
+           (l.target === dst || l.target?.id === dst)
+    );
+
+    if (existing) {
+      existing.count = (existing.count || 1) + 1;
+    } else {
+      if (networkLinks.length >= 35) {
+        // Evict oldest link then prune any nodes with no remaining links
+        networkLinks.shift();
+        pruneOrphanNodes();
+      }
+      networkLinks.push({ source: src, target: dst, count: 1, wan: hopWan });
     }
-    networkLinks.push({
-      source: sourceId,
-      target: targetId,
-      count: 1,
-      wan: isWan
-    });
   }
 
   updateGraphUI();
-  pulseParticle(sourceId, targetId, isWan);
+  // Pulse: for WAN flows, animate src→Gateway then Gateway→dst
+  if (isWan) {
+    pulseParticle(srcIp, GATEWAY, false);
+    setTimeout(() => pulseParticle(GATEWAY, dstIp, true), 400);
+  } else {
+    pulseParticle(srcIp, dstIp, false);
+  }
+}
+
+function pruneOrphanNodes() {
+  // Remove nodes that are not referenced by any remaining link
+  const referenced = new Set();
+  for (const l of networkLinks) {
+    referenced.add(l.source?.id ?? l.source);
+    referenced.add(l.target?.id ?? l.target);
+  }
+  for (const id of Object.keys(networkNodes)) {
+    if (id !== 'Gateway' && !referenced.has(id)) {
+      delete networkNodes[id];
+    }
+  }
 }
 
 function updateGraphUI() {
@@ -1492,8 +1554,12 @@ function connectWebSocket() {
           return;
         }
 
-        // Live connection or anomaly event from engine
+        // Live connection or anomaly event from engine — deduplicate against REST bootstrap
         if (data.event === 'app_classified' || data.event === 'anomaly') {
+          const key = data.id || `${data.event}:${data.ts}:${(data.five_tuple||{}).src_ip||data.src_ip}:${(data.five_tuple||{}).dst_ip||data.dst_ip}`;
+          if (seenConnKeys.has(key)) return;
+          seenConnKeys.add(key);
+          if (seenConnKeys.size > 400) seenConnKeys.clear(); // prevent unbounded growth
           const norm = normalizeConn(data);
           connStore.unshift(norm);
           if (connStore.length > 200) connStore.pop();
@@ -1564,7 +1630,8 @@ function updateStatsUI(d) {
 
   // Footer status bar
   document.getElementById('sb-packets').textContent = pkts;
-  document.getElementById('sb-buffer').textContent = `${buf} / 256 MB (Ring Buffer Active)`;
+  // total_bytes is cumulative transferred, not ring-buffer occupancy
+  document.getElementById('sb-buffer').textContent = `${buf} transferred`;
   document.getElementById('footer-packet-rate').textContent = `${Math.max(0, pps)} pkts/s`;
 }
 
@@ -1577,9 +1644,11 @@ async function fetchInitialConnections() {
 
     if (!rawList.length) return;
 
-    // Load initial classified connections from server ring buffer
+    // Load initial classified connections from server ring buffer — track keys for WS dedup
     const sample = rawList.slice(0, 30);
     sample.forEach(c => {
+      const key = c.id || `${c.event}:${c.ts}:${(c.five_tuple||{}).src_ip||c.src_ip}:${(c.five_tuple||{}).dst_ip||c.dst_ip}`;
+      seenConnKeys.add(key);
       const norm = normalizeConn(c);
       connStore.push(norm);
       addPacketRow(norm);
@@ -1601,11 +1670,13 @@ async function fetchInitialEvents() {
     const events = await res.json();
     if (Array.isArray(events)) {
       events.slice(0, 10).forEach(ev => {
+        const key = ev.id || `${ev.event}:${ev.ts}:${(ev.five_tuple||{}).src_ip||ev.src_ip}:${(ev.five_tuple||{}).dst_ip||ev.dst_ip}`;
+        seenConnKeys.add(key);
         const norm = normalizeConn(ev);
         connStore.unshift(norm);
         addPacketRow(norm, true);
         if (norm.src_ip !== '-') {
-          addNetworkConnection(norm.src_ip, 'Gateway', true);
+          addNetworkConnection(norm.src_ip, norm.dst_ip || 'Gateway', norm.blocked);
         }
       });
     }
@@ -1636,8 +1707,10 @@ function togglePause() {
 function stopCapture() {
   isStreamPaused = true;
   document.getElementById('btn-pause').textContent = '▶ RESUME FEED';
-  document.getElementById('hdr-capture-text').textContent = 'Stopped';
-  document.getElementById('sb-status').textContent = 'Stopped';
+  // Note: stopCapture pauses this browser's feed rendering only.
+  // The engine continues capturing; use the engine CLI to stop packet capture.
+  document.getElementById('hdr-capture-text').textContent = 'Feed Stopped';
+  document.getElementById('sb-status').textContent = 'Feed Stopped';
   document.getElementById('sb-status').style.color = '#f85149';
   document.getElementById('sb-dot-status').className = 'sb-dot red';
 }
