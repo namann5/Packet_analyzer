@@ -18,6 +18,8 @@ const seenAlertKeys = new Set();
 let selectedRow = null;
 let lastPacketCount = 0;
 let lastTime = Date.now();
+let lastPps = 0;
+const seenConnKeys = new Set();
 let activeFilterText = "";
 let activeAlertFilter = "ALL";
 let ws = null;
@@ -1084,6 +1086,9 @@ function connectWebSocket() {
         if (data.event === "app_classified") {
           hasReceivedTraffic = true;
           const norm = normalizeConn(data);
+          const connKey = data.id != null ? `id_${data.id}` : `${norm.timestamp}_${norm.src_ip}_${norm.dst_ip}_${norm.dst_port}_${norm.app}`;
+          seenConnKeys.add(connKey);
+          if (seenConnKeys.size > 1000) seenConnKeys.delete(seenConnKeys.values().next().value);
           connStore.unshift(norm);
           if (connStore.length > MAX_CONN_ROWS) connStore.pop();
           addPacketRow(norm, true);
@@ -1123,9 +1128,17 @@ function updateStatsUI(d) {
   const now = Date.now();
   const dt = (now - lastTime) / 1000;
   const curr = d.total_packets || 0;
-  const pps = dt > 0 && lastPacketCount > 0 ? Math.max(0, Math.round((curr - lastPacketCount) / dt)) : 0;
-  lastPacketCount = curr;
-  lastTime = now;
+  let pps = lastPps;
+  if (lastPacketCount === 0) {
+    pps = 0;
+    lastPacketCount = curr;
+    lastTime = now;
+  } else if (dt >= 0.25) {
+    pps = Math.max(0, Math.round((curr - lastPacketCount) / dt));
+    lastPacketCount = curr;
+    lastTime = now;
+  }
+  lastPps = pps;
 
   if (curr > 0) hasReceivedTraffic = true;
 
@@ -1187,6 +1200,11 @@ function updateStatsUI(d) {
   setPill("pill-floods", "Floods", floods, true);
   setPill("pill-tunnels", "Tunnels", tunnels, false);
 
+  const sMalEl = document.getElementById("s-malicious");
+  if (sMalEl) sMalEl.textContent = malicious.toLocaleString();
+  const sVpnEl = document.getElementById("s-vpn");
+  if (sVpnEl) sVpnEl.textContent = vpnDet.toLocaleString();
+
   // Footer & Charts
   document.getElementById("sb-packets").textContent = pkts;
   document.getElementById("sb-buffer").textContent = `${connStore.length} / ${MAX_CONN_ROWS} flows (${buf})`;
@@ -1231,6 +1249,10 @@ async function fetchInitialConnections() {
     const sample = rawList.slice(0, 40);
     sample.forEach(c => {
       const norm = normalizeConn(c);
+      const connKey = c.id != null ? `id_${c.id}` : `${norm.timestamp}_${norm.src_ip}_${norm.dst_ip}_${norm.dst_port}_${norm.app}`;
+      if (seenConnKeys.has(connKey)) return;
+      seenConnKeys.add(connKey);
+      if (seenConnKeys.size > 1000) seenConnKeys.delete(seenConnKeys.values().next().value);
       connStore.push(norm);
       addPacketRow(norm);
       addNetworkConnection(norm.src_ip, norm.dst_ip);
@@ -1420,6 +1442,7 @@ window.addEventListener("load", () => {
   setInterval(() => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       fetchInitialEvents();
+      fetchInitialConnections();
     }
   }, 8000);
 });

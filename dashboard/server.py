@@ -13,6 +13,7 @@ import asyncio
 import collections
 import html
 import json
+import math
 import os
 import random
 import time
@@ -336,23 +337,25 @@ def register_child_process(proc: Any) -> None:
 
 
 async def shutdown_ipc_and_children() -> None:
-    """Close the IPC listening socket, active engine connections, and child processes."""
+    """Close active engine connections, the IPC listening socket, and child processes."""
     global _ipc_server
-    if _ipc_server is not None:
-        _ipc_server.close()
-        try:
-            await _ipc_server.wait_closed()
-        except Exception:
-            pass
-        _ipc_server = None
-
+    # Close active engine connections BEFORE awaiting _ipc_server.wait_closed()
+    # because Python 3.12+ wait_closed() blocks until accepted sockets close.
     for writer in list(_active_engine_conns):
         _active_engine_conns.discard(writer)
         try:
             writer.close()
-            await writer.wait_closed()
+            await asyncio.wait_for(writer.wait_closed(), timeout=2.0)
         except Exception:
             pass
+
+    if _ipc_server is not None:
+        _ipc_server.close()
+        try:
+            await asyncio.wait_for(_ipc_server.wait_closed(), timeout=2.0)
+        except Exception:
+            pass
+        _ipc_server = None
 
     for proc in list(_supervised_processes):
         try:
@@ -793,10 +796,12 @@ def _fmt_bps(bps: float) -> str:
 def _summarize_alert_event(event: dict[str, Any]) -> tuple[str, str, str, str]:
     """Return (timestamp_str, alert_type, action_label, detail_text) for reports."""
     ts_raw = event.get("ts")
-    if isinstance(ts_raw, (int, float)) and ts_raw > 0:
-        ts_str = time.strftime("%H:%M:%S", time.localtime(ts_raw))
-    else:
-        ts_str = "—"
+    ts_str = "—"
+    if isinstance(ts_raw, (int, float)) and not isinstance(ts_raw, bool) and math.isfinite(ts_raw) and ts_raw > 0:
+        try:
+            ts_str = time.strftime("%H:%M:%S", time.localtime(ts_raw))
+        except (ValueError, OverflowError, OSError):
+            ts_str = "—"
 
     alert_type = str(
         event.get("alert_type") or event.get("type") or event.get("reason") or "ALERT"
@@ -1276,7 +1281,7 @@ async def export_report(format: str = "html"):
                 for app_name, count in app_items:
                     app_rows.append(
                         [
-                            xml_escape(str(app_name)),
+                            str(app_name),
                             f"{count:,}",
                             f"{(count / total_app_pkts) * 100:.1f}%",
                         ]
@@ -1310,7 +1315,7 @@ async def export_report(format: str = "html"):
                 for reason, count in blocked_items:
                     blk_rows.append(
                         [
-                            xml_escape(str(reason)),
+                            str(reason),
                             f"{count:,}",
                             f"{(count / total_blk) * 100:.1f}%",
                         ]

@@ -1130,6 +1130,46 @@ body {
 .badge.VPN_FLAGGED  { color: #e3b341; border-color: rgba(227, 179, 65, 0.6); background: rgba(227, 179, 65, 0.15); }
 .badge.OTHER        { color: var(--text-dim); border-color: var(--border); background: var(--bg2); }
 
+/* Stage 04 Stat Cards Strip */
+.stage04-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 16px;
+  background: #0d121b;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.stage04-bar .stat-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.stage04-bar .stat-card.danger {
+  border-color: rgba(248, 81, 73, 0.45);
+  background: rgba(248, 81, 73, 0.08);
+}
+.stage04-bar .stat-card.warn {
+  border-color: rgba(227, 179, 65, 0.45);
+  background: rgba(227, 179, 65, 0.08);
+}
+.stage04-bar .stat-card .label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: .04em;
+}
+.stage04-bar .stat-card .value {
+  font-size: 13px;
+  font-weight: 700;
+  color: #f0f6fc;
+}
+
 /* Protocol Dissection Tree */
 .proto-tree {
   font-family: 'JetBrains Mono', monospace;

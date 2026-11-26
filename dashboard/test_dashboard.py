@@ -353,10 +353,10 @@ def test_api_report_pdf():
     assert res.content.startswith(b"%PDF")
 
     pdf_text = _extract_pdf_text(res.content)
-    assert "(Malicious Blocks)" in pdf_text
-    assert "(VPN Detections)" in pdf_text
-    assert "(VPN Blocks)" in pdf_text
-    assert "(1)" in pdf_text
+    import re as _re
+    assert _re.search(r"\(Malicious Blocks\)[^\n]*\n[^\n]*\(1\)", pdf_text)
+    assert _re.search(r"\(VPN Detections\)[^\n]*\n[^\n]*\(1\)", pdf_text)
+    assert _re.search(r"\(VPN Blocks\)[^\n]*\n[^\n]*\(1\)", pdf_text)
     assert "(Share)" in pdf_text
     assert "(100.0%)" in pdf_text
 
@@ -767,8 +767,11 @@ def test_issue_20_ui_structure_accessibility_and_no_conflict_markers():
     assert "niceCeil" in res_js.text
     assert "escapeHtml" in res_js.text
     assert "security_alert" in res_js.text
-    assert "transportProto" in res_js.text
+    assert "transportProto" in src_js if False else "transportProto" in res_js.text
     assert "footerPauseBtn" in res_js.text
+    assert "s-malicious" in res_js.text
+    assert "s-vpn" in res_js.text
+    assert ".stage04-bar .stat-card" in body
 
     # Behavioral JS test for alert filtering (when node is available)
     import shutil
@@ -873,8 +876,16 @@ def test_issue_20_reports_empty_states_and_alerts_alignment():
     })
     state.ingest({
         "event": "app_classified",
-        "app": "Google",
+        "app": "R&D Portal",
         "bytes": 2048,
+        "blocked": False,
+    })
+    state.ingest({
+        "event": "security_alert",
+        "ts": float("inf"),
+        "alert_type": "VPN_DETECTED",
+        "detail": "Non-finite timestamp test",
+        "app_or_domain": "WireGuard",
         "blocked": False,
     })
 
@@ -883,7 +894,7 @@ def test_issue_20_reports_empty_states_and_alerts_alignment():
     assert "total security alert(s) recorded across detectors" in pop_html.text
     assert "evil.example.net" in pop_html.text
     assert "MALICIOUS" in pop_html.text
-    assert "Google" in pop_html.text
+    assert "R&amp;D Portal" in pop_html.text
 
     pop_pdf = client.get("/api/report?format=pdf")
     assert pop_pdf.status_code == 200
@@ -891,7 +902,7 @@ def test_issue_20_reports_empty_states_and_alerts_alignment():
     pop_pdf_text = _extract_pdf_text(pop_pdf.content)
     assert "evil.example.net" in pop_pdf_text
     assert "(MALICIOUS)" in pop_pdf_text
-    assert "(Google)" in pop_pdf_text
+    assert "(R&D Portal)" in pop_pdf_text
 
 
 def test_issue_20_handle_engine_connection_broadcasts_security_alert():
