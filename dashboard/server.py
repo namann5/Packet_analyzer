@@ -355,17 +355,20 @@ async def shutdown_ipc_and_children() -> None:
             pass
 
     for proc in list(_supervised_processes):
-        _supervised_processes.discard(proc)
         try:
             if proc.poll() is None:
                 proc.terminate()
                 try:
-                    proc.wait(timeout=2.0)
+                    await asyncio.to_thread(proc.wait, timeout=2.0)
                 except Exception:
                     proc.kill()
-                    proc.wait(timeout=1.0)
-        except Exception:
-            pass
+                    await asyncio.to_thread(proc.wait, timeout=1.0)
+            if proc.poll() is not None:
+                _supervised_processes.discard(proc)
+            else:
+                print(f"[shutdown] warning: child process {getattr(proc, 'pid', proc)} still running")
+        except Exception as exc:
+            print(f"[shutdown] warning: failed to terminate child process {getattr(proc, 'pid', proc)}: {exc}")
 
 
 async def handle_engine_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -523,10 +526,12 @@ async def lifespan(app: FastAPI):
         bridge_task.cancel()
         mock_task.cancel()
         broadcast_task.cancel()
+        # Close active engine connections and IPC server first so ipc_bridge's
+        # server.wait_closed() does not deadlock waiting on open engine sockets.
+        await shutdown_ipc_and_children()
         await asyncio.gather(
             bridge_task, mock_task, broadcast_task, return_exceptions=True
         )
-        await shutdown_ipc_and_children()
 
 
 app = FastAPI(title="Packet Analyzer Dashboard", lifespan=lifespan)

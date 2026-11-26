@@ -980,6 +980,7 @@ def test_graceful_shutdown_cleans_up_ipc_and_children():
             await srv.shutdown_ipc_and_children()
             assert srv._ipc_server is None
             assert not temp_server.is_serving()
+            assert writer.is_closing()
             assert len(srv._active_engine_conns) == 0
             assert len(srv._supervised_processes) == 0
             assert proc.poll() is not None
@@ -994,23 +995,40 @@ def test_graceful_shutdown_cleans_up_ipc_and_children():
 
 def test_lifespan_releases_ipc_port_on_restart():
     """Verify lifespan startup/shutdown cleanly releases the IPC port so restart succeeds."""
+    import socket
     import dashboard.server as srv
 
-    async def _run():
-        async with srv.lifespan(app):
-            await asyncio.sleep(0.05)
-            assert srv._ipc_server is not None
-            assert srv._ipc_server.is_serving()
-        assert srv._ipc_server is None
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        isolated_port = s.getsockname()[1]
 
-        # Immediate restart should bind cleanly without port conflict
-        async with srv.lifespan(app):
-            await asyncio.sleep(0.05)
-            assert srv._ipc_server is not None
-            assert srv._ipc_server.is_serving()
-        assert srv._ipc_server is None
+    orig_port = srv.ENGINE_PORT
+    srv.ENGINE_PORT = isolated_port
+    try:
+        async def _run():
+            async with srv.lifespan(app):
+                await asyncio.sleep(0.05)
+                assert srv._ipc_server is not None
+                assert srv._ipc_server.is_serving()
+                # Connect an active engine client to verify shutdown does not deadlock
+                reader, writer = await asyncio.open_connection("127.0.0.1", isolated_port)
+                await asyncio.sleep(0.05)
+                assert len(srv._active_engine_conns) == 1
+            assert srv._ipc_server is None
+            assert len(srv._active_engine_conns) == 0
+            assert await asyncio.wait_for(reader.read(1), timeout=1.0) == b""
+            writer.close()
 
-    asyncio.run(_run())
+            # Immediate restart should bind cleanly without port conflict
+            async with srv.lifespan(app):
+                await asyncio.sleep(0.05)
+                assert srv._ipc_server is not None
+                assert srv._ipc_server.is_serving()
+            assert srv._ipc_server is None
+
+        asyncio.run(asyncio.wait_for(_run(), timeout=5.0))
+    finally:
+        srv.ENGINE_PORT = orig_port
 
 
 # ============================================================================
